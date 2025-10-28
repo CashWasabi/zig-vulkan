@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const c = @cImport({
     @cDefine("GLFW_INCLUDE_VULKAN", "");
+    @cInclude("signal.h");
     @cInclude("GLFW/glfw3.h");
     // @cInclude("vulkan/vulkan.h");
 });
@@ -17,8 +18,26 @@ const VALIDATION_LAYERS = [_][:0]const u8{
     "VK_LAYER_KHRONOS_validation",
 };
 
+var g_should_exit: bool = false;
+
+const QueueFamilyIndices = struct {
+    graphics_family: ?u32 = null,
+};
+
+fn handle_sigint(sig: c_int) callconv(C) void {
+    _ = sig;
+    g_should_exit = true;
+}
+
 pub fn main() !void {
-    const allocator = std.heap.c_allocator;
+    if (c.signal(c.SIGINT, handle_sigint) == c.SIG_ERR) {
+        @panic("Failed to register SIGINT handler");
+    }
+
+    var dbga: std.heap.DebugAllocator(.{}) = .init;
+    defer if (dbga.deinit() == .leak) @panic("Debug allocator has leaked meory!");
+    const allocator = dbga.allocator();
+
     if (c.glfwInit() == c.GLFW_FALSE) @panic("glwfInit failed!");
     defer c.glfwTerminate();
 
@@ -63,7 +82,7 @@ pub fn main() !void {
     create_info.enabledExtensionCount = @intCast(extensions.len);
     create_info.ppEnabledExtensionNames = extensions.ptr;
 
-    // SETUP DEBUG MESSENGER (OPTIONAL)
+    // SETUP VALIDATION LAYERS (OPTIONAL)
     var debug_create_info: c.VkDebugUtilsMessengerCreateInfoEXT = .{};
     const validation_layers_slice = try allocator.alloc([*c]const u8, VALIDATION_LAYERS.len);
     defer allocator.free(validation_layers_slice);
@@ -100,10 +119,42 @@ pub fn main() !void {
     }
     defer destroyDebugUtilsMessengerEXT(instance, debug_messenger, null);
 
+    // =====================
+    // PICK PHYSICAL DEVICE
+    // =====================
+    var physical_device: c.VkPhysicalDevice = null;
+    var device_count: u32 = 0;
+    if (c.vkEnumeratePhysicalDevices(instance, &device_count, null) != c.VK_SUCCESS) {
+        @panic("failed calling vkEnumeratePhysicalDevices while looking for devices count!");
+    }
+    if (device_count == 0) {
+        @panic("failed to find GPUs with Vulkan support!");
+    }
+    const devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
+    defer allocator.free(devices);
+    if (c.vkEnumeratePhysicalDevices(instance, &device_count, devices.ptr) != c.VK_SUCCESS) {
+        @panic("failed calling vkEnumeratePhysicalDevices while getting devices!");
+    }
+    for (devices) |device| {
+        if (try isDeviceSuitable(allocator, device)) {
+            physical_device = device;
+            break;
+        }
+    }
+    if (physical_device == null) {
+        @panic("failed to find a suitable GPU!");
+    }
+
+    // ====================
+    // PICK LOGICAL DEVICE
+    // ====================
+
     // ==============
     // RUN MAIN LOOP
     // ==============
-    while (c.glfwWindowShouldClose(window) == c.GLFW_FALSE) {
+    // NOTE: we use sigint as long as we don't have a real window! Without a window we can't close correctly
+    while (!g_should_exit) {
+        // while (c.glfwWindowShouldClose(window) == c.GLFW_FALSE or c.glfwGetKey(window, c.GLFW_KEY_ESCAPE) != c.GLFW_PRESS) {
         c.glfwPollEvents();
     }
 }
@@ -217,4 +268,28 @@ pub fn destroyDebugUtilsMessengerEXT(
         const vkDestroyDebugUtilsMessengerEXT_fn: c.PFN_vkDestroyDebugUtilsMessengerEXT = @ptrCast(func);
         vkDestroyDebugUtilsMessengerEXT_fn.?(instance, debug_messenger, p_allocator);
     }
+}
+
+pub fn isDeviceSuitable(allocator: std.mem.Allocator, device: c.VkPhysicalDevice) !bool {
+    const indices: QueueFamilyIndices = try findQueueFamilies(allocator, device);
+    return indices.graphics_family != null;
+}
+
+pub fn findQueueFamilies(allocator: std.mem.Allocator, device: c.VkPhysicalDevice) !QueueFamilyIndices {
+    var queue_family_count: u32 = 0;
+    c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, null);
+    const queue_families = try allocator.alloc(c.VkQueueFamilyProperties, queue_family_count);
+    defer allocator.free(queue_families);
+    c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.ptr);
+
+    var indices: QueueFamilyIndices = .{};
+
+    for (queue_families, 0..) |queue_family, i| {
+        if ((queue_family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT) != 0) {
+            indices.graphics_family = @intCast(i);
+            break;
+        }
+    }
+
+    return indices;
 }
