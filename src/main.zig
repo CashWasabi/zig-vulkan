@@ -17,12 +17,12 @@ const HEIGHT: u32 = 600;
 
 const ENABLE_VALIDATION_LAYERS: bool = builtin.mode == .Debug;
 
-const VALIDATION_LAYERS = [_][:0]const u8{
-    "VK_LAYER_KHRONOS_validation",
+const VALIDATION_LAYERS = [_][*c]const u8{
+    "VK_LAYER_KHRONOS_validation".ptr,
 };
 
-const DEVICE_EXTENSIONS = [_][:0]const u8{
-    c.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+const DEVICE_EXTENSIONS = [_][*c]const u8{
+    c.VK_KHR_SWAPCHAIN_EXTENSION_NAME.ptr,
 };
 
 const ENABLE_DYNAMIC_STATE: bool = true;
@@ -66,19 +66,6 @@ pub fn main() !void {
     defer if (dbga.deinit() == .leak) @panic("Debug allocator has leaked meory!");
     const allocator = dbga.allocator();
 
-    // We'll need those slices later!
-    const validation_layers_slice = try allocator.alloc([*c]const u8, VALIDATION_LAYERS.len);
-    defer allocator.free(validation_layers_slice);
-    for (0..VALIDATION_LAYERS.len) |i| validation_layers_slice[i] = VALIDATION_LAYERS[i].ptr;
-
-    const device_extensions_slice = try allocator.alloc([*c]const u8, DEVICE_EXTENSIONS.len);
-    defer allocator.free(device_extensions_slice);
-    for (0..DEVICE_EXTENSIONS.len) |i| device_extensions_slice[i] = DEVICE_EXTENSIONS[i].ptr;
-
-    const dynamic_states_slice = try allocator.alloc(c_uint, DYNAMIC_STATES.len);
-    defer allocator.free(dynamic_states_slice);
-    for (0..DYNAMIC_STATES.len) |i| dynamic_states_slice[i] = DYNAMIC_STATES[i];
-
     if (c.glfwInit() == c.GLFW_FALSE) @panic("glwfInit failed!");
     defer c.glfwTerminate();
 
@@ -105,40 +92,41 @@ pub fn main() !void {
         @panic("Validation Layers not available!");
     }
 
-    var app_info: c.VkApplicationInfo = .{};
-    app_info.sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "Hello Triangle";
-    app_info.applicationVersion = c.VK_MAKE_VERSION(1, 0, 0);
-    app_info.pEngineName = "No Engine";
-    app_info.engineVersion = c.VK_MAKE_VERSION(1, 0, 0);
-    app_info.apiVersion = c.VK_API_VERSION_1_0;
+    var app_info: c.VkApplicationInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "Hello Triangle",
+        .applicationVersion = c.VK_MAKE_VERSION(1, 0, 0),
+        .pEngineName = "No Engine",
+        .engineVersion = c.VK_MAKE_VERSION(1, 0, 0),
+        .apiVersion = c.VK_API_VERSION_1_0,
+    };
 
-    var create_info: c.VkInstanceCreateInfo = .{};
-    create_info.sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    create_info.pApplicationInfo = &app_info;
+    var instance_create_info: c.VkInstanceCreateInfo = .{};
+    instance_create_info.sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_create_info.pApplicationInfo = &app_info;
 
     const extensions = try getRequiredExtensions(allocator);
     defer allocator.free(extensions);
 
-    create_info.enabledExtensionCount = @intCast(extensions.len);
-    create_info.ppEnabledExtensionNames = extensions.ptr;
+    instance_create_info.enabledExtensionCount = @intCast(extensions.len);
+    instance_create_info.ppEnabledExtensionNames = extensions.ptr;
 
     // SETUP VALIDATION LAYERS (OPTIONAL)
     var debug_create_info: c.VkDebugUtilsMessengerCreateInfoEXT = .{};
-    create_info.enabledLayerCount = @intCast(VALIDATION_LAYERS.len);
+    instance_create_info.enabledLayerCount = @intCast(VALIDATION_LAYERS.len);
     if (ENABLE_VALIDATION_LAYERS) {
-        create_info.ppEnabledLayerNames = validation_layers_slice.ptr;
+        instance_create_info.ppEnabledLayerNames = VALIDATION_LAYERS[0..].ptr;
 
         populateDebugMessengerCreateInfo(&debug_create_info);
-        create_info.pNext = &debug_create_info;
+        instance_create_info.pNext = &debug_create_info;
     } else {
-        create_info.enabledLayerCount = 0;
-        create_info.pNext = null;
+        instance_create_info.enabledLayerCount = 0;
+        instance_create_info.pNext = null;
     }
 
     var instance: c.VkInstance = undefined;
     // NOTE: the second parameter here is a custom memoru allocator callback!
-    if (c.vkCreateInstance(&create_info, null, &instance) != c.VK_SUCCESS) {
+    if (c.vkCreateInstance(&instance_create_info, null, &instance) != c.VK_SUCCESS) {
         @panic("vkCreateInstance failed!");
     }
     defer c.vkDestroyInstance(instance, null);
@@ -242,13 +230,13 @@ pub fn main() !void {
     logical_device_create_info.pQueueCreateInfos = queue_slice.ptr;
 
     // enable extensions
-    logical_device_create_info.enabledExtensionCount = @intCast(device_extensions_slice.len);
-    logical_device_create_info.ppEnabledExtensionNames = device_extensions_slice.ptr;
+    logical_device_create_info.enabledExtensionCount = @intCast(DEVICE_EXTENSIONS.len);
+    logical_device_create_info.ppEnabledExtensionNames = DEVICE_EXTENSIONS[0..].ptr;
 
     // enable validation layers (optional)
     if (ENABLE_VALIDATION_LAYERS) {
         logical_device_create_info.enabledLayerCount = @intCast(VALIDATION_LAYERS.len);
-        logical_device_create_info.ppEnabledLayerNames = validation_layers_slice.ptr;
+        logical_device_create_info.ppEnabledLayerNames = VALIDATION_LAYERS[0..].ptr;
     } else {
         logical_device_create_info.enabledLayerCount = 0;
     }
@@ -440,7 +428,7 @@ pub fn main() !void {
     var dynamic_state_create_info: c.VkPipelineDynamicStateCreateInfo = .{};
     dynamic_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamic_state_create_info.dynamicStateCount = @intCast(DYNAMIC_STATES.len);
-    dynamic_state_create_info.pDynamicStates = dynamic_states_slice.ptr;
+    dynamic_state_create_info.pDynamicStates = DYNAMIC_STATES[0..].ptr;
 
     var vertex_input_info: c.VkPipelineVertexInputStateCreateInfo = .{};
     vertex_input_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -565,13 +553,160 @@ pub fn main() !void {
     }
     defer c.vkDestroyPipeline(logical_device, graphics_pipeline, null);
 
+    // =====================
+    // CREATE FRAME BUFFERS
+    // =====================
+    var swap_chain_framebuffers: std.ArrayList(c.VkFramebuffer) = .empty;
+    defer swap_chain_framebuffers.deinit(allocator);
+    try swap_chain_framebuffers.resize(allocator, swap_chain_image_views.items.len);
+    for (0..swap_chain_image_views.items.len) |i| {
+        // var attachments: []c.VkImageView  = {};
+
+        var framebuffer_create_info: c.VkFramebufferCreateInfo = .{};
+        framebuffer_create_info.sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_create_info.renderPass = render_pass;
+        framebuffer_create_info.attachmentCount = 1;
+        // NOTE: small hack to have a 1 item sized slice that can coerce to a [*c] bu using .ptr
+        //       not sure if this actually works or just sends garbage over!
+        framebuffer_create_info.pAttachments = swap_chain_image_views.items[i .. i + 1].ptr;
+        framebuffer_create_info.width = swap_chain_extent.width;
+        framebuffer_create_info.height = swap_chain_extent.height;
+        framebuffer_create_info.layers = 1;
+
+        if (c.vkCreateFramebuffer(logical_device, &framebuffer_create_info, null, &swap_chain_framebuffers.items[i]) != c.VK_SUCCESS) {
+            @panic("failed to create framebuffer!");
+        }
+    }
+    defer {
+        for (swap_chain_framebuffers.items) |swap_chain_framebuffer| {
+            c.vkDestroyFramebuffer(logical_device, swap_chain_framebuffer, null);
+        }
+    }
+
+    // ====================
+    // CREATE COMMAND POOL
+    // ====================
+    var command_pool: c.VkCommandPool = null;
+
+    var command_pool_create_info: c.VkCommandPoolCreateInfo = .{};
+    command_pool_create_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    command_pool_create_info.flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    command_pool_create_info.queueFamilyIndex = indices.graphics_family.?;
+    if (c.vkCreateCommandPool(logical_device, &command_pool_create_info, null, &command_pool) != c.VK_SUCCESS) {
+        @panic("failed to create command pool!");
+    }
+    defer c.vkDestroyCommandPool(logical_device, command_pool, null);
+
+    var command_buffer: c.VkCommandBuffer = null;
+
+    var command_buffer_alloc_info: c.VkCommandBufferAllocateInfo = .{};
+    command_buffer_alloc_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    command_buffer_alloc_info.commandPool = command_pool;
+    command_buffer_alloc_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    command_buffer_alloc_info.commandBufferCount = 1;
+
+    if (c.vkAllocateCommandBuffers(logical_device, &command_buffer_alloc_info, &command_buffer) != c.VK_SUCCESS) {
+        @panic("failed to allocate command buffers!");
+    }
+
+    // ====================
+    // CREATE SYNC OBJECTS
+    // ====================
+    var image_available_semaphore: c.VkSemaphore = null;
+    var render_finished_semaphore: c.VkSemaphore = null;
+    var in_flight_fence: c.VkFence = null;
+
+    var semaphore_create_info: c.VkSemaphoreCreateInfo = .{};
+    semaphore_create_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    var fence_create_info: c.VkFenceCreateInfo = .{};
+    fence_create_info.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    // NOTE: workaround preventing block on first frame
+    fence_create_info.flags = c.VK_FENCE_CREATE_SIGNALED_BIT;
+
+    if (c.vkCreateSemaphore(logical_device, &semaphore_create_info, null, &image_available_semaphore) != c.VK_SUCCESS or
+        c.vkCreateSemaphore(logical_device, &semaphore_create_info, null, &render_finished_semaphore) != c.VK_SUCCESS or
+        c.vkCreateFence(logical_device, &fence_create_info, null, &in_flight_fence) != c.VK_SUCCESS)
+    {
+        @panic("failed to create semaphores!");
+    }
+    defer c.vkDestroySemaphore(logical_device, image_available_semaphore, null);
+    defer c.vkDestroySemaphore(logical_device, render_finished_semaphore, null);
+    defer c.vkDestroyFence(logical_device, in_flight_fence, null);
+
     // ==============
     // RUN MAIN LOOP
     // ==============
+    // gracefully finish async tasks before exiting
+    defer _ = c.vkDeviceWaitIdle(logical_device);
     // NOTE: we use sigint as long as we don't have a real window! Without a window we can't close correctly
     while (!G_SHOULD_EXIT) {
         // while (c.glfwWindowShouldClose(window) == c.GLFW_FALSE or c.glfwGetKey(window, c.GLFW_KEY_ESCAPE) != c.GLFW_PRESS) {
         c.glfwPollEvents();
+
+        // ===========
+        // DRAW FRAME
+        // ===========
+        if (c.vkWaitForFences(logical_device, 1, &in_flight_fence, c.VK_TRUE, c.UINT64_MAX) != c.VK_SUCCESS) {
+            @panic("failed while trying to wait for fences in main loop.");
+        }
+        if (c.vkResetFences(logical_device, 1, &in_flight_fence) != c.VK_SUCCESS) {
+            @panic("failed while trying to reset fences in main loop.");
+        }
+
+        var image_index: u32 = 0;
+        if (c.vkAcquireNextImageKHR(logical_device, swap_chain, c.UINT64_MAX, image_available_semaphore, null, &image_index) != c.VK_SUCCESS) {
+            @panic("failed while trying to aquire next image_khr in main loop.");
+        }
+
+        if (c.vkResetCommandBuffer(command_buffer, 0) != c.VK_SUCCESS) {
+            @panic("failed while trying to reset command buffer in main loop.");
+        }
+        recordCommandBuffer(command_buffer, image_index, render_pass, swap_chain_framebuffers.items, swap_chain_extent, graphics_pipeline);
+
+        const wait_semaphores = [_]c.VkSemaphore{image_available_semaphore};
+        const wait_stages = [_]c.VkPipelineStageFlags{c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        const signal_semaphores = [_]c.VkSemaphore{render_finished_semaphore};
+
+        var submit_info: c.VkSubmitInfo = .{};
+        submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = wait_semaphores[0..].ptr;
+        submit_info.pWaitDstStageMask = wait_stages[0..].ptr;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = signal_semaphores[0..].ptr;
+        if (c.vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence) != c.VK_SUCCESS) {
+            @panic("failed to submit draw command buffer!");
+        }
+
+        // subpass dependencies
+        var dependency: c.VkSubpassDependency = .{};
+        dependency.srcSubpass = c.VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        // TODO: I don't understand what we're doing here
+        render_pass_create_info.dependencyCount = 1;
+        render_pass_create_info.pDependencies = &dependency;
+
+        // presentation
+        const swap_chains = [_]c.VkSwapchainKHR{swap_chain};
+        var present_info_khr: c.VkPresentInfoKHR = .{};
+        present_info_khr.sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info_khr.waitSemaphoreCount = 1;
+        present_info_khr.pWaitSemaphores = signal_semaphores[0..].ptr;
+        present_info_khr.swapchainCount = 1;
+        present_info_khr.pSwapchains = swap_chains[0..].ptr;
+        present_info_khr.pImageIndices = &image_index;
+        present_info_khr.pResults = null;
+        if (c.vkQueuePresentKHR(present_queue, &present_info_khr) != c.VK_SUCCESS) {
+            @panic("Oh man! Failed while trying to queue present_khr. This is the fun part with colors and bling!");
+        }
     }
 }
 
@@ -588,19 +723,11 @@ pub fn checkValidationLayerSupport(allocator: std.mem.Allocator) !bool {
         @panic("vkEnumerateInstanceLayerProperties in check_validation_layer_support failed!");
     }
 
-    // NOTE: refactor with slices
     for (VALIDATION_LAYERS) |layer_name| {
         var layer_found: bool = false;
         for (available_layers) |layer_properties| {
-            var slices_eql: bool = true;
-            for (0..layer_name.len) |i| {
-                if (layer_name[i] != layer_properties.layerName[i]) {
-                    slices_eql = false;
-                    break;
-                }
-            }
-
-            if (slices_eql) {
+            const str_len = std.mem.len(layer_name);
+            if (std.mem.eql(u8, layer_name[0..str_len], layer_properties.layerName[0..str_len])) {
                 layer_found = true;
                 break;
             }
@@ -751,25 +878,18 @@ pub fn checkDeviceExtensionSupport(allocator: std.mem.Allocator, physical_device
         @panic("failed while calling vkEnumerateDeviceExtensionProperties in checkDeviceExtensionSupport for available_extensions lookup!");
     }
 
-    var required_extensions: std.ArrayList([:0]const u8) = .empty;
+    var required_extensions: std.ArrayList([*c]const u8) = .empty;
     defer required_extensions.deinit(allocator);
     for (DEVICE_EXTENSIONS) |ext| try required_extensions.append(allocator, ext);
 
-    // NOTE: dear god refactor this!
-    // we could just use slices and do std.mem.eql
-    // that way we can compare the buffer from extensionName with our [:0]const u8
     for (available_extensions) |ext| {
         var i = required_extensions.items.len;
         while (i > 0) {
             i -= 1;
-            var match: bool = true;
-            for (0..required_extensions.items[i].len) |j| {
-                if (required_extensions.items[i][j] != ext.extensionName[j]) {
-                    match = false;
-                    break;
-                }
+            const str_len = std.mem.len(required_extensions.items[i]);
+            if (required_extensions.items[i][0..str_len] == ext.extensionName[0..str_len]) {
+                required_extensions.swapRemove(i); // if we have duplicates for some reason
             }
-            if (match) _ = required_extensions.swapRemove(i); // if we have duplicates for some reason
         }
     }
 
@@ -879,4 +999,65 @@ pub fn loadSpirV(allocator: std.mem.Allocator, code: []const u8) ![]align(4) con
 
     // Reinterpret as u32 slice
     return std.mem.bytesAsSlice(u32, aligned);
+}
+
+pub fn recordCommandBuffer(
+    command_buffer: c.VkCommandBuffer,
+    image_index: u32,
+    render_pass: c.VkRenderPass,
+    swap_chain_framebuffers: []c.VkFramebuffer,
+    swap_chain_extent: c.VkExtent2D,
+    graphics_pipeline: c.VkPipeline,
+) void {
+    // begin render pass
+    var command_buffer_begin_info: c.VkCommandBufferBeginInfo = .{};
+    command_buffer_begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    command_buffer_begin_info.flags = 0; // Optional
+    command_buffer_begin_info.pInheritanceInfo = null; // Optional
+    if (c.vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info) != c.VK_SUCCESS) {
+        @panic("failed to begin recording command buffer!");
+    }
+
+    // begin render pass
+    var render_pass_begin_info: c.VkRenderPassBeginInfo = .{};
+    render_pass_begin_info.sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_begin_info.renderPass = render_pass;
+    render_pass_begin_info.framebuffer = swap_chain_framebuffers[image_index];
+    render_pass_begin_info.renderArea.offset = .{ .x = 0, .y = 0 };
+    render_pass_begin_info.renderArea.extent = swap_chain_extent;
+
+    const clear_color: c.VkClearValue = .{
+        .color = .{
+            .float32 = [_]f32{ 0.0, 0.0, 0.0, 1.0 },
+        },
+    };
+    render_pass_begin_info.clearValueCount = 1;
+    render_pass_begin_info.pClearValues = &clear_color;
+    c.vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
+
+    // draw commands
+    c.vkCmdBindPipeline(command_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+    var viewport: c.VkViewport = .{};
+    viewport.x = 0.0;
+    viewport.y = 0.0;
+    viewport.width = @floatFromInt(swap_chain_extent.width);
+    viewport.height = @floatFromInt(swap_chain_extent.height);
+    viewport.minDepth = 0.0;
+    viewport.maxDepth = 1.0;
+    c.vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    var scissor: c.VkRect2D = .{};
+    scissor.offset = .{ .x = 0, .y = 0 };
+    scissor.extent = swap_chain_extent;
+    c.vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    c.vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    // end render pass
+    c.vkCmdEndRenderPass(command_buffer);
+
+    // end command buffer
+    if (c.vkEndCommandBuffer(command_buffer) != c.VK_SUCCESS) {
+        @panic("failed to record command buffer!");
+    }
 }
