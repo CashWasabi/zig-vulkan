@@ -9,6 +9,7 @@ A repo following several vulkan tutorials:
 
 ```bash
 pacman -S vulkan-devel
+pacman -S shaderc
 ```
 
 ## Further ressources
