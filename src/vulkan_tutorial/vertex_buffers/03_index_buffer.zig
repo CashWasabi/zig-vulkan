@@ -15,6 +15,7 @@ var G_SHOULD_EXIT: bool = false;
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
 
+// enable validation layers for debug mode
 const ENABLE_VALIDATION_LAYERS: bool = builtin.mode == .Debug;
 
 const VALIDATION_LAYERS = [_][:0]const u8{
@@ -49,6 +50,57 @@ const SwapChainSupportDetails = struct {
     pub fn deinit(self: *SwapChainSupportDetails, allocator: std.mem.Allocator) void {
         self.formats.deinit(allocator);
         self.present_modes.deinit(allocator);
+    }
+};
+
+// ==========================================
+// PACKED TYPES BECAUSE THEIR LAYOUT MATTERS
+// ==========================================
+const Vec2 = packed struct {
+    x: f32,
+    y: f32,
+};
+const Vec3 = packed struct {
+    x: f32,
+    y: f32,
+    z: f32,
+};
+const Vec4 = packed struct {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+};
+const Vertex = packed struct {
+    pos: Vec2,
+    color: Vec3,
+
+    pub fn getBindingDescription() c.VkVertexInputBindingDescription {
+        return .{
+            .binding = 0,
+            .stride = @sizeOf(Vertex),
+            // NOTE: this also exists! VK_VERTEX_INPUT_RATE_INSTANCE
+            .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+        };
+    }
+
+    // TODO: this doesn't work we need to allocate memory or have a static array somewhere
+    pub fn getAttributeDescriptions() [2]c.VkVertexInputAttributeDescription {
+        var attribute_descriptions: [2]c.VkVertexInputAttributeDescription = undefined;
+        attribute_descriptions[0] = .{
+            .binding = 0,
+            .location = 0,
+            .format = c.VK_FORMAT_R32G32_SFLOAT,
+            .offset = @offsetOf(Vertex, "pos"),
+        };
+        attribute_descriptions[1] = .{
+            .binding = 0,
+            .location = 1,
+            .format = c.VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = @offsetOf(Vertex, "color"),
+        };
+
+        return attribute_descriptions;
     }
 };
 
@@ -105,27 +157,28 @@ pub fn main() !void {
         @panic("Validation Layers not available!");
     }
 
-    var app_info: c.VkApplicationInfo = .{};
-    app_info.sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "Hello Triangle";
-    app_info.applicationVersion = c.VK_MAKE_VERSION(1, 0, 0);
-    app_info.pEngineName = "No Engine";
-    app_info.engineVersion = c.VK_MAKE_VERSION(1, 0, 0);
-    app_info.apiVersion = c.VK_API_VERSION_1_0;
-
-    var create_info: c.VkInstanceCreateInfo = .{};
-    create_info.sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    create_info.pApplicationInfo = &app_info;
+    var app_info: c.VkApplicationInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "Hello Triangle",
+        .applicationVersion = c.VK_MAKE_VERSION(1, 0, 0),
+        .pEngineName = "No Engine",
+        .engineVersion = c.VK_MAKE_VERSION(1, 0, 0),
+        .apiVersion = c.VK_API_VERSION_1_0,
+    };
 
     const extensions = try getRequiredExtensions(allocator);
     defer allocator.free(extensions);
 
-    create_info.enabledExtensionCount = @intCast(extensions.len);
-    create_info.ppEnabledExtensionNames = extensions.ptr;
+    var create_info: c.VkInstanceCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app_info,
+        .enabledLayerCount = @intCast(VALIDATION_LAYERS.len),
+        .enabledExtensionCount = @intCast(extensions.len),
+        .ppEnabledExtensionNames = extensions.ptr,
+    };
 
     // SETUP VALIDATION LAYERS (OPTIONAL)
     var debug_create_info: c.VkDebugUtilsMessengerCreateInfoEXT = .{};
-    create_info.enabledLayerCount = @intCast(VALIDATION_LAYERS.len);
     if (ENABLE_VALIDATION_LAYERS) {
         create_info.ppEnabledLayerNames = validation_layers_slice.ptr;
 
@@ -136,16 +189,19 @@ pub fn main() !void {
         create_info.pNext = null;
     }
 
+    // ======================
+    // SETUP VULKAN INSTANCE
+    // ======================
     var instance: c.VkInstance = undefined;
-    // NOTE: the second parameter here is a custom memoru allocator callback!
+    // NOTE: the second parameter here is a custom memory allocator callback!
     if (c.vkCreateInstance(&create_info, null, &instance) != c.VK_SUCCESS) {
         @panic("vkCreateInstance failed!");
     }
     defer c.vkDestroyInstance(instance, null);
 
-    // =======================
+    // ======================
     // SETUP DEBUG MESSENGER
-    // =======================
+    // ======================
     var debug_messenger: c.VkDebugUtilsMessengerEXT = undefined;
     var debug_messenger_create_info: c.VkDebugUtilsMessengerCreateInfoEXT = .{};
     if (ENABLE_VALIDATION_LAYERS) {
@@ -200,19 +256,21 @@ pub fn main() !void {
 
     // GRAPHICS QUEUE
     const graphics_queue_priority: f32 = 1.0;
-    var graphics_queue_create_info: c.VkDeviceQueueCreateInfo = .{};
-    graphics_queue_create_info.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    graphics_queue_create_info.queueFamilyIndex = indices.graphics_family.?;
-    graphics_queue_create_info.queueCount = 1;
-    graphics_queue_create_info.pQueuePriorities = &graphics_queue_priority;
+    const graphics_queue_create_info: c.VkDeviceQueueCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = indices.graphics_family.?,
+        .queueCount = 1,
+        .pQueuePriorities = &graphics_queue_priority,
+    };
 
     // PRESENT QUEUE
     const present_queue_priority: f32 = 1.0;
-    var present_queue_create_info: c.VkDeviceQueueCreateInfo = .{};
-    present_queue_create_info.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    present_queue_create_info.queueFamilyIndex = indices.present_family.?;
-    present_queue_create_info.queueCount = 1;
-    present_queue_create_info.pQueuePriorities = &present_queue_priority;
+    const present_queue_create_info: c.VkDeviceQueueCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = indices.present_family.?,
+        .queueCount = 1,
+        .pQueuePriorities = &present_queue_priority,
+    };
 
     // if both have the same family index we can skip one
     var queue_slice: []c.VkDeviceQueueCreateInfo = undefined;
@@ -233,17 +291,16 @@ pub fn main() !void {
     var logical_device: c.VkDevice = null;
 
     const device_features: c.VkPhysicalDeviceFeatures = .{};
-    var logical_device_create_info: c.VkDeviceCreateInfo = .{};
-    logical_device_create_info.sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    logical_device_create_info.pEnabledFeatures = &device_features;
-
-    // register our queues BEFORE we create our logical device
-    logical_device_create_info.queueCreateInfoCount = @intCast(queue_slice.len); // graphics queue and present queue
-    logical_device_create_info.pQueueCreateInfos = queue_slice.ptr;
-
-    // enable extensions
-    logical_device_create_info.enabledExtensionCount = @intCast(device_extensions_slice.len);
-    logical_device_create_info.ppEnabledExtensionNames = device_extensions_slice.ptr;
+    var logical_device_create_info: c.VkDeviceCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pEnabledFeatures = &device_features,
+        // register our queues BEFORE we create our logical device
+        .queueCreateInfoCount = @intCast(queue_slice.len), // graphics queue and present queue
+        .pQueueCreateInfos = queue_slice.ptr,
+        // enable extensions
+        .enabledExtensionCount = @intCast(device_extensions_slice.len),
+        .ppEnabledExtensionNames = device_extensions_slice.ptr,
+    };
 
     // enable validation layers (optional)
     if (ENABLE_VALIDATION_LAYERS) {
@@ -281,17 +338,18 @@ pub fn main() !void {
     if (swap_chain_support.capabilities.maxImageCount > 0 and image_count > swap_chain_support.capabilities.maxImageCount) {
         image_count = swap_chain_support.capabilities.maxImageCount;
     }
-    var swap_chain_create_info: c.VkSwapchainCreateInfoKHR = .{};
-    swap_chain_create_info.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swap_chain_create_info.surface = surface;
-    swap_chain_create_info.minImageCount = image_count;
-    swap_chain_create_info.imageFormat = surface_format.format;
-    swap_chain_create_info.imageColorSpace = surface_format.colorSpace;
-    swap_chain_create_info.imageExtent = extent;
-    swap_chain_create_info.imageArrayLayers = 1;
-    swap_chain_create_info.imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    var swap_chain_create_info: c.VkSwapchainCreateInfoKHR = .{
+        .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = surface,
+        .minImageCount = image_count,
+        .imageFormat = surface_format.format,
+        .imageColorSpace = surface_format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+    };
 
-    // is that really necessary? :(
+    // TODO: is that really necessary? :(
     const queue_family_indices_slice = try allocator.alloc(u32, 2);
     defer allocator.free(queue_family_indices_slice);
     queue_family_indices_slice[0] = indices.graphics_family.?;
@@ -342,20 +400,25 @@ pub fn main() !void {
     defer swap_chain_image_views.deinit(allocator);
     try swap_chain_image_views.resize(allocator, swap_chain_images.items.len);
     for (0..swap_chain_images.items.len) |i| {
-        var swap_chain_image_view_create_info: c.VkImageViewCreateInfo = .{};
-        swap_chain_image_view_create_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        swap_chain_image_view_create_info.image = swap_chain_images.items[i];
-        swap_chain_image_view_create_info.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-        swap_chain_image_view_create_info.format = swap_chain_image_format;
-        swap_chain_image_view_create_info.components.r = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        swap_chain_image_view_create_info.components.g = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        swap_chain_image_view_create_info.components.b = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        swap_chain_image_view_create_info.components.a = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        swap_chain_image_view_create_info.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-        swap_chain_image_view_create_info.subresourceRange.baseMipLevel = 0;
-        swap_chain_image_view_create_info.subresourceRange.levelCount = 1;
-        swap_chain_image_view_create_info.subresourceRange.baseArrayLayer = 0;
-        swap_chain_image_view_create_info.subresourceRange.layerCount = 1;
+        var swap_chain_image_view_create_info: c.VkImageViewCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = swap_chain_images.items[i],
+            .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+            .format = swap_chain_image_format,
+            .components = .{
+                .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = .{
+                .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
         if (c.vkCreateImageView(logical_device, &swap_chain_image_view_create_info, null, &swap_chain_image_views.items[i]) != c.VK_SUCCESS) {
             @panic("failed to create image views!");
         }
@@ -365,38 +428,41 @@ pub fn main() !void {
             c.vkDestroyImageView(logical_device, swap_chain_image_view, null);
         }
     }
-    // =========================
+    // ===================
     // CREATE RENDER PASS
-    // =========================
-    var color_attachment: c.VkAttachmentDescription = .{};
-    color_attachment.format = swap_chain_image_format;
-    color_attachment.samples = c.VK_SAMPLE_COUNT_1_BIT;
-    color_attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color_attachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
-    color_attachment.stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    color_attachment.stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color_attachment.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-    color_attachment.finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    // ===================
+    var color_attachment: c.VkAttachmentDescription = .{
+        .format = swap_chain_image_format,
+        .samples = c.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = c.VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
 
-    var color_attachment_ref: c.VkAttachmentReference = .{};
-    color_attachment_ref.attachment = 0;
-    color_attachment_ref.layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    var color_attachment_ref: c.VkAttachmentReference = .{
+        .attachment = 0,
+        .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
 
-    var subpass: c.VkSubpassDescription = .{};
-    subpass.pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &color_attachment_ref;
+    var subpass: c.VkSubpassDescription = .{
+        .pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref,
+    };
 
     var render_pass: c.VkRenderPass = null;
     defer c.vkDestroyRenderPass(logical_device, render_pass, null);
 
-    var render_pass_create_info: c.VkRenderPassCreateInfo = .{};
-    render_pass_create_info.sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    render_pass_create_info.attachmentCount = 1;
-    render_pass_create_info.pAttachments = &color_attachment;
-    render_pass_create_info.subpassCount = 1;
-    render_pass_create_info.pSubpasses = &subpass;
-
+    var render_pass_create_info: c.VkRenderPassCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+    };
     if (c.vkCreateRenderPass(logical_device, &render_pass_create_info, null, &render_pass) != c.VK_SUCCESS) {
         @panic("failed to create render pass!");
     }
@@ -437,75 +503,89 @@ pub fn main() !void {
     shader_stages[1] = frag_shader_stage_info;
 
     // FIXED FUNCTIONS
-    var dynamic_state_create_info: c.VkPipelineDynamicStateCreateInfo = .{};
-    dynamic_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state_create_info.dynamicStateCount = @intCast(DYNAMIC_STATES.len);
-    dynamic_state_create_info.pDynamicStates = dynamic_states_slice.ptr;
+    var dynamic_state_create_info: c.VkPipelineDynamicStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = @intCast(DYNAMIC_STATES.len),
+        .pDynamicStates = dynamic_states_slice.ptr,
+    };
 
-    var vertex_input_info: c.VkPipelineVertexInputStateCreateInfo = .{};
-    vertex_input_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_info.vertexBindingDescriptionCount = 0;
-    vertex_input_info.pVertexBindingDescriptions = null; // Optional
-    vertex_input_info.vertexAttributeDescriptionCount = 0;
-    vertex_input_info.pVertexAttributeDescriptions = null; // Optional
+    const binding_description = Vertex.getBindingDescription();
+    const attribute_descriptions = Vertex.getAttributeDescriptions();
+    var vertex_input_info: c.VkPipelineVertexInputStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding_description, // Optional
+        .vertexAttributeDescriptionCount = @intCast(attribute_descriptions.len),
+        .pVertexAttributeDescriptions = &attribute_descriptions, // Optional
+    };
 
-    var input_assembly: c.VkPipelineInputAssemblyStateCreateInfo = .{};
-    input_assembly.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    input_assembly.primitiveRestartEnable = c.VK_FALSE;
+    var input_assembly: c.VkPipelineInputAssemblyStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = c.VK_FALSE,
+    };
 
-    var viewport: c.VkViewport = .{};
-    viewport.x = 0.0;
-    viewport.y = 0.0;
-    viewport.width = @floatFromInt(swap_chain_extent.width);
-    viewport.height = @floatFromInt(swap_chain_extent.height);
-    viewport.minDepth = 0.0;
-    viewport.maxDepth = 1.0;
+    var viewport: c.VkViewport = .{
+        .x = 0.0,
+        .y = 0.0,
+        .width = @floatFromInt(swap_chain_extent.width),
+        .height = @floatFromInt(swap_chain_extent.height),
+        .minDepth = 0.0,
+        .maxDepth = 1.0,
+    };
 
-    var scissor: c.VkRect2D = .{};
-    scissor.offset = .{ .x = 0, .y = 0 };
-    scissor.extent = swap_chain_extent;
+    var scissor: c.VkRect2D = .{
+        .offset = .{
+            .x = 0,
+            .y = 0,
+        },
+        .extent = swap_chain_extent,
+    };
 
-    var viewport_state_create_info: c.VkPipelineViewportStateCreateInfo = .{};
-    viewport_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport_state_create_info.viewportCount = 1;
-    viewport_state_create_info.scissorCount = 1;
+    var viewport_state_create_info: c.VkPipelineViewportStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
     if (ENABLE_DYNAMIC_STATE == false) {
         viewport_state_create_info.pViewports = &viewport;
         viewport_state_create_info.pScissors = &scissor;
     }
 
-    var rasterizer_create_info: c.VkPipelineRasterizationStateCreateInfo = .{};
-    rasterizer_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer_create_info.depthClampEnable = c.VK_FALSE;
-    rasterizer_create_info.rasterizerDiscardEnable = c.VK_FALSE;
-    rasterizer_create_info.polygonMode = c.VK_POLYGON_MODE_FILL;
-    rasterizer_create_info.lineWidth = 1.0;
-    rasterizer_create_info.cullMode = c.VK_CULL_MODE_BACK_BIT;
-    rasterizer_create_info.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
-    rasterizer_create_info.depthBiasEnable = c.VK_FALSE;
-    rasterizer_create_info.depthBiasConstantFactor = 0.0; // Optional
-    rasterizer_create_info.depthBiasClamp = 0.0; // Optional
-    rasterizer_create_info.depthBiasSlopeFactor = 0.0; // Optional
+    var rasterizer_create_info: c.VkPipelineRasterizationStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = c.VK_FALSE,
+        .rasterizerDiscardEnable = c.VK_FALSE,
+        .polygonMode = c.VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0,
+        .cullMode = c.VK_CULL_MODE_BACK_BIT,
+        .frontFace = c.VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = c.VK_FALSE,
+        .depthBiasConstantFactor = 0.0, // Optional
+        .depthBiasClamp = 0.0, // Optional
+        .depthBiasSlopeFactor = 0.0, // Optional
+    };
 
-    var multisampling_create_info: c.VkPipelineMultisampleStateCreateInfo = .{};
-    multisampling_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling_create_info.sampleShadingEnable = c.VK_FALSE;
-    multisampling_create_info.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
-    multisampling_create_info.minSampleShading = 1.0; // Optional
-    multisampling_create_info.pSampleMask = null; // Optional
-    multisampling_create_info.alphaToCoverageEnable = c.VK_FALSE; // Optional
-    multisampling_create_info.alphaToOneEnable = c.VK_FALSE; // Optional
+    var multisampling_create_info: c.VkPipelineMultisampleStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = c.VK_FALSE,
+        .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
+        .minSampleShading = 1.0, // Optional
+        .pSampleMask = null, // Optional
+        .alphaToCoverageEnable = c.VK_FALSE, // Optional
+        .alphaToOneEnable = c.VK_FALSE, // Optional
+    };
 
-    var color_blend_attachment: c.VkPipelineColorBlendAttachmentState = .{};
-    color_blend_attachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
-    color_blend_attachment.blendEnable = c.VK_FALSE;
-    color_blend_attachment.srcColorBlendFactor = c.VK_BLEND_FACTOR_ONE; // Optional
-    color_blend_attachment.dstColorBlendFactor = c.VK_BLEND_FACTOR_ZERO; // Optional
-    color_blend_attachment.colorBlendOp = c.VK_BLEND_OP_ADD; // Optional
-    color_blend_attachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE; // Optional
-    color_blend_attachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO; // Optional
-    color_blend_attachment.alphaBlendOp = c.VK_BLEND_OP_ADD; // Optional
+    var color_blend_attachment: c.VkPipelineColorBlendAttachmentState = .{
+        .colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = c.VK_FALSE,
+        .srcColorBlendFactor = c.VK_BLEND_FACTOR_ONE, // Optional
+        .dstColorBlendFactor = c.VK_BLEND_FACTOR_ZERO, // Optional
+        .colorBlendOp = c.VK_BLEND_OP_ADD, // Optional
+        .srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE, // Optional
+        .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO, // Optional
+        .alphaBlendOp = c.VK_BLEND_OP_ADD, // Optional
+    };
     // NOTE: this are settings for alpha channel blending
     // color_blend_attachment.blendEnable = c.VK_TRUE;
     // color_blend_attachment.srcColorBlendFactor = c.VK_BLEND_FACTOR_SRC_ALPHA;
@@ -515,12 +595,13 @@ pub fn main() !void {
     // color_blend_attachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO;
     // color_blend_attachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
 
-    var color_blending: c.VkPipelineColorBlendStateCreateInfo = .{};
-    color_blending.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    color_blending.logicOpEnable = c.VK_FALSE;
-    color_blending.logicOp = c.VK_LOGIC_OP_COPY; // Optional
-    color_blending.attachmentCount = 1;
-    color_blending.pAttachments = &color_blend_attachment;
+    var color_blending: c.VkPipelineColorBlendStateCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = c.VK_FALSE,
+        .logicOp = c.VK_LOGIC_OP_COPY, // Optional
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+    };
     color_blending.blendConstants[0] = 0.0; // Optional
     color_blending.blendConstants[1] = 0.0; // Optional
     color_blending.blendConstants[2] = 0.0; // Optional
@@ -528,36 +609,38 @@ pub fn main() !void {
 
     var pipeline_layout: c.VkPipelineLayout = null;
     defer c.vkDestroyPipelineLayout(logical_device, pipeline_layout, null);
-    var pipeline_layout_create_info: c.VkPipelineLayoutCreateInfo = .{};
-    pipeline_layout_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_create_info.setLayoutCount = 0; // Optional
-    pipeline_layout_create_info.pSetLayouts = null; // Optional
-    pipeline_layout_create_info.pushConstantRangeCount = 0; // Optional
-    pipeline_layout_create_info.pPushConstantRanges = null; // Optional
+    var pipeline_layout_create_info: c.VkPipelineLayoutCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0, // Optional
+        .pSetLayouts = null, // Optional
+        .pushConstantRangeCount = 0, // Optional
+        .pPushConstantRanges = null, // Optional
+    };
 
     if (c.vkCreatePipelineLayout(logical_device, &pipeline_layout_create_info, null, &pipeline_layout) != c.VK_SUCCESS) {
         @panic("failed to create pipeline layout!");
     }
 
-    var pipeline_create_info: c.VkGraphicsPipelineCreateInfo = .{};
-    pipeline_create_info.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_create_info.stageCount = 2;
-    // TODO: would this work with static [_]shader_stages => shader_stages[0..].ptr ???
-    // then we could use it on the other "slices", too
-    pipeline_create_info.pStages = shader_stages.ptr;
-    pipeline_create_info.pVertexInputState = &vertex_input_info;
-    pipeline_create_info.pInputAssemblyState = &input_assembly;
-    pipeline_create_info.pViewportState = &viewport_state_create_info;
-    pipeline_create_info.pRasterizationState = &rasterizer_create_info;
-    pipeline_create_info.pMultisampleState = &multisampling_create_info;
-    pipeline_create_info.pDepthStencilState = null; // Optional
-    pipeline_create_info.pColorBlendState = &color_blending;
-    pipeline_create_info.pDynamicState = &dynamic_state_create_info;
-    pipeline_create_info.layout = pipeline_layout;
-    pipeline_create_info.renderPass = render_pass;
-    pipeline_create_info.subpass = 0;
-    pipeline_create_info.basePipelineHandle = null; // Optional
-    pipeline_create_info.basePipelineIndex = -1; // Optional
+    var pipeline_create_info: c.VkGraphicsPipelineCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        // TODO: would this work with static [_]shader_stages => shader_stages[0..].ptr ???
+        // then we could use it on the other "slices", too
+        .pStages = shader_stages.ptr,
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state_create_info,
+        .pRasterizationState = &rasterizer_create_info,
+        .pMultisampleState = &multisampling_create_info,
+        .pDepthStencilState = null, // Optional
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_state_create_info,
+        .layout = pipeline_layout,
+        .renderPass = render_pass,
+        .subpass = 0,
+        .basePipelineHandle = null, // Optional
+        .basePipelineIndex = -1, // Optional
+    };
 
     var graphics_pipeline: c.VkPipeline = null;
     if (c.vkCreateGraphicsPipelines(logical_device, null, 1, &pipeline_create_info, null, &graphics_pipeline) != c.VK_SUCCESS) {
@@ -573,17 +656,17 @@ pub fn main() !void {
     try swap_chain_framebuffers.resize(allocator, swap_chain_image_views.items.len);
     for (0..swap_chain_image_views.items.len) |i| {
         // var attachments: []c.VkImageView  = {};
-
-        var framebuffer_create_info: c.VkFramebufferCreateInfo = .{};
-        framebuffer_create_info.sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebuffer_create_info.renderPass = render_pass;
-        framebuffer_create_info.attachmentCount = 1;
-        // NOTE: small hack to have a 1 item sized slice that can coerce to a [*c] bu using .ptr
-        //       not sure if this actually works or just sends garbage over!
-        framebuffer_create_info.pAttachments = swap_chain_image_views.items[i .. i + 1].ptr;
-        framebuffer_create_info.width = swap_chain_extent.width;
-        framebuffer_create_info.height = swap_chain_extent.height;
-        framebuffer_create_info.layers = 1;
+        var framebuffer_create_info: c.VkFramebufferCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = render_pass,
+            .attachmentCount = 1,
+            // NOTE: small hack to have a 1 item sized slice that can coerce to a [*c] bu using .ptr
+            //       not sure if this actually works or just sends garbage over!
+            .pAttachments = swap_chain_image_views.items[i .. i + 1].ptr,
+            .width = swap_chain_extent.width,
+            .height = swap_chain_extent.height,
+            .layers = 1,
+        };
 
         if (c.vkCreateFramebuffer(logical_device, &framebuffer_create_info, null, &swap_chain_framebuffers.items[i]) != c.VK_SUCCESS) {
             @panic("failed to create framebuffer!");
@@ -600,22 +683,79 @@ pub fn main() !void {
     // ====================
     var command_pool: c.VkCommandPool = null;
 
-    var command_pool_create_info: c.VkCommandPoolCreateInfo = .{};
-    command_pool_create_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_create_info.flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    command_pool_create_info.queueFamilyIndex = indices.graphics_family.?;
+    var command_pool_create_info: c.VkCommandPoolCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = indices.graphics_family.?,
+    };
     if (c.vkCreateCommandPool(logical_device, &command_pool_create_info, null, &command_pool) != c.VK_SUCCESS) {
         @panic("failed to create command pool!");
     }
     defer c.vkDestroyCommandPool(logical_device, command_pool, null);
 
+    // =====================
+    // CREATE VERTEX BUFFER
+    // =====================
+    var vertices: [4]Vertex = [_]Vertex{
+        .{
+            .pos = .{ .x = -0.5, .y = -0.5 },
+            .color = .{ .x = 1.0, .y = 0.0, .z = 0.0 },
+        },
+        .{
+            .pos = .{ .x = 0.5, .y = -0.5 },
+            .color = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
+        },
+        .{
+            .pos = .{ .x = 0.5, .y = 0.5 },
+            .color = .{ .x = 0.0, .y = 0.0, .z = 1.0 },
+        },
+        .{
+            .pos = .{ .x = -0.5, .y = 0.5 },
+            .color = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
+        },
+    };
+    // can also be u32
+    var vertex_indices: [6]u16 = [_]u16{ 0, 1, 2, 2, 3, 0 };
+
+    var vertex_buffer: c.VkBuffer = null;
+    defer c.vkDestroyBuffer(logical_device, vertex_buffer, null);
+    var vertex_buffer_memory: c.VkDeviceMemory = null;
+    defer c.vkFreeMemory(logical_device, vertex_buffer_memory, null);
+    createVertexBuffer(
+        &command_pool,
+        &graphics_queue,
+        &vertex_buffer,
+        &vertex_buffer_memory,
+        physical_device,
+        logical_device,
+        &vertices,
+    );
+
+    var index_buffer: c.VkBuffer = null;
+    defer c.vkDestroyBuffer(logical_device, index_buffer, null);
+    var index_buffer_memory: c.VkDeviceMemory = null;
+    defer c.vkFreeMemory(logical_device, index_buffer_memory, null);
+    createIndexBuffer(
+        &command_pool,
+        &graphics_queue,
+        &index_buffer,
+        &index_buffer_memory,
+        physical_device,
+        logical_device,
+        &vertex_indices,
+    );
+
+    // ======================
+    // CREATE COMMAND BUFFER
+    // ======================
     var command_buffer: c.VkCommandBuffer = null;
 
-    var command_buffer_alloc_info: c.VkCommandBufferAllocateInfo = .{};
-    command_buffer_alloc_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    command_buffer_alloc_info.commandPool = command_pool;
-    command_buffer_alloc_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    command_buffer_alloc_info.commandBufferCount = 1;
+    var command_buffer_alloc_info: c.VkCommandBufferAllocateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
 
     if (c.vkAllocateCommandBuffers(logical_device, &command_buffer_alloc_info, &command_buffer) != c.VK_SUCCESS) {
         @panic("failed to allocate command buffers!");
@@ -628,13 +768,15 @@ pub fn main() !void {
     var render_finished_semaphore: c.VkSemaphore = null;
     var in_flight_fence: c.VkFence = null;
 
-    var semaphore_create_info: c.VkSemaphoreCreateInfo = .{};
-    semaphore_create_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    var semaphore_create_info: c.VkSemaphoreCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
 
-    var fence_create_info: c.VkFenceCreateInfo = .{};
-    fence_create_info.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    // NOTE: workaround preventing block on first frame
-    fence_create_info.flags = c.VK_FENCE_CREATE_SIGNALED_BIT;
+    var fence_create_info: c.VkFenceCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        // NOTE: workaround preventing block on first frame
+        .flags = c.VK_FENCE_CREATE_SIGNALED_BIT,
+    };
 
     if (c.vkCreateSemaphore(logical_device, &semaphore_create_info, null, &image_available_semaphore) != c.VK_SUCCESS or
         c.vkCreateSemaphore(logical_device, &semaphore_create_info, null, &render_finished_semaphore) != c.VK_SUCCESS or
@@ -674,33 +816,46 @@ pub fn main() !void {
         if (c.vkResetCommandBuffer(command_buffer, 0) != c.VK_SUCCESS) {
             @panic("failed while trying to reset command buffer in main loop.");
         }
-        recordCommandBuffer(command_buffer, image_index, render_pass, swap_chain_framebuffers.items, swap_chain_extent, graphics_pipeline);
+        recordCommandBuffer(
+            command_buffer,
+            image_index,
+            render_pass,
+            swap_chain_framebuffers.items,
+            swap_chain_extent,
+            graphics_pipeline,
+            vertex_buffer,
+            index_buffer,
+            // &vertices,
+            &vertex_indices,
+        );
 
         const wait_semaphores = [_]c.VkSemaphore{image_available_semaphore};
         const wait_stages = [_]c.VkPipelineStageFlags{c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         const signal_semaphores = [_]c.VkSemaphore{render_finished_semaphore};
 
-        var submit_info: c.VkSubmitInfo = .{};
-        submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = wait_semaphores[0..].ptr;
-        submit_info.pWaitDstStageMask = wait_stages[0..].ptr;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &command_buffer;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = signal_semaphores[0..].ptr;
+        var submit_info: c.VkSubmitInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = wait_semaphores[0..].ptr,
+            .pWaitDstStageMask = wait_stages[0..].ptr,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = signal_semaphores[0..].ptr,
+        };
         if (c.vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence) != c.VK_SUCCESS) {
             @panic("failed to submit draw command buffer!");
         }
 
         // subpass dependencies
-        var dependency: c.VkSubpassDependency = .{};
-        dependency.srcSubpass = c.VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.srcAccessMask = 0;
-        dependency.dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        var dependency: c.VkSubpassDependency = .{
+            .srcSubpass = c.VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        };
 
         // TODO: I don't understand what we're doing here
         render_pass_create_info.dependencyCount = 1;
@@ -708,14 +863,15 @@ pub fn main() !void {
 
         // presentation
         const swap_chains = [_]c.VkSwapchainKHR{swap_chain};
-        var present_info_khr: c.VkPresentInfoKHR = .{};
-        present_info_khr.sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info_khr.waitSemaphoreCount = 1;
-        present_info_khr.pWaitSemaphores = signal_semaphores[0..].ptr;
-        present_info_khr.swapchainCount = 1;
-        present_info_khr.pSwapchains = swap_chains[0..].ptr;
-        present_info_khr.pImageIndices = &image_index;
-        present_info_khr.pResults = null;
+        var present_info_khr: c.VkPresentInfoKHR = .{
+            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = signal_semaphores[0..].ptr,
+            .swapchainCount = 1,
+            .pSwapchains = swap_chains[0..].ptr,
+            .pImageIndices = &image_index,
+            .pResults = null,
+        };
         if (c.vkQueuePresentKHR(present_queue, &present_info_khr) != c.VK_SUCCESS) {
             @panic("Oh man! Failed while trying to queue present_khr. This is the fun part with colors and bling!");
         }
@@ -1035,50 +1191,71 @@ pub fn recordCommandBuffer(
     swap_chain_framebuffers: []c.VkFramebuffer,
     swap_chain_extent: c.VkExtent2D,
     graphics_pipeline: c.VkPipeline,
+    vertex_buffer: c.VkBuffer,
+    index_buffer: c.VkBuffer,
+    // vertices: []Vertex,
+    vertex_indices: []u16,
 ) void {
     // begin render pass
-    var command_buffer_begin_info: c.VkCommandBufferBeginInfo = .{};
-    command_buffer_begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    command_buffer_begin_info.flags = 0; // Optional
-    command_buffer_begin_info.pInheritanceInfo = null; // Optional
+    var command_buffer_begin_info: c.VkCommandBufferBeginInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = 0, // Optional
+        .pInheritanceInfo = null, // Optional
+    };
     if (c.vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info) != c.VK_SUCCESS) {
         @panic("failed to begin recording command buffer!");
     }
 
     // begin render pass
-    var render_pass_begin_info: c.VkRenderPassBeginInfo = .{};
-    render_pass_begin_info.sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    render_pass_begin_info.renderPass = render_pass;
-    render_pass_begin_info.framebuffer = swap_chain_framebuffers[image_index];
-    render_pass_begin_info.renderArea.offset = .{ .x = 0, .y = 0 };
-    render_pass_begin_info.renderArea.extent = swap_chain_extent;
-
     const clear_color: c.VkClearValue = .{
         .color = .{
             .float32 = [_]f32{ 0.0, 0.0, 0.0, 1.0 },
         },
     };
-    render_pass_begin_info.clearValueCount = 1;
-    render_pass_begin_info.pClearValues = &clear_color;
+    var render_pass_begin_info: c.VkRenderPassBeginInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = render_pass,
+        .framebuffer = swap_chain_framebuffers[image_index],
+        .renderArea = .{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = swap_chain_extent,
+        },
+        .clearValueCount = 1,
+        .pClearValues = &clear_color,
+    };
     c.vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
 
     // draw commands
     c.vkCmdBindPipeline(command_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
-    var viewport: c.VkViewport = .{};
-    viewport.x = 0.0;
-    viewport.y = 0.0;
-    viewport.width = @floatFromInt(swap_chain_extent.width);
-    viewport.height = @floatFromInt(swap_chain_extent.height);
-    viewport.minDepth = 0.0;
-    viewport.maxDepth = 1.0;
+
+    const vertex_buffers: [1]c.VkBuffer = [_]c.VkBuffer{vertex_buffer};
+    const offsets: [1]c.VkDeviceSize = [_]c.VkDeviceSize{0};
+    c.vkCmdBindVertexBuffers(
+        command_buffer,
+        0,
+        1,
+        vertex_buffers[0..].ptr,
+        offsets[0..].ptr,
+    );
+    c.vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, c.VK_INDEX_TYPE_UINT16);
+
+    var viewport: c.VkViewport = .{
+        .x = 0.0,
+        .y = 0.0,
+        .width = @floatFromInt(swap_chain_extent.width),
+        .height = @floatFromInt(swap_chain_extent.height),
+        .minDepth = 0.0,
+        .maxDepth = 1.0,
+    };
     c.vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
-    var scissor: c.VkRect2D = .{};
-    scissor.offset = .{ .x = 0, .y = 0 };
-    scissor.extent = swap_chain_extent;
+    var scissor: c.VkRect2D = .{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = swap_chain_extent,
+    };
     c.vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-    c.vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    c.vkCmdDrawIndexed(command_buffer, @intCast(vertex_indices.len), 1, 0, 0, 0);
 
     // end render pass
     c.vkCmdEndRenderPass(command_buffer);
@@ -1086,5 +1263,234 @@ pub fn recordCommandBuffer(
     // end command buffer
     if (c.vkEndCommandBuffer(command_buffer) != c.VK_SUCCESS) {
         @panic("failed to record command buffer!");
+    }
+}
+
+// TODO: is this correct?
+fn findMemoryType(
+    type_filter: u32,
+    mem_properties: c.VkPhysicalDeviceMemoryProperties,
+    properties: c.VkMemoryPropertyFlags,
+) u32 {
+    for (0..mem_properties.memoryTypeCount) |i| {
+        const idx: u32 = @intCast(i);
+        const shift: u5 = @intCast(idx);
+
+        if ((type_filter & (@as(u32, 1) << shift)) != 0 and
+            (mem_properties.memoryTypes[idx].propertyFlags & properties) == properties)
+        {
+            return idx;
+        }
+    }
+
+    @panic("failed to find suitable memory type!");
+}
+
+fn createIndexBuffer(
+    command_pool: *c.VkCommandPool,
+    graphics_queue: *c.VkQueue,
+    index_buffer: *c.VkBuffer,
+    index_buffer_memory: *c.VkDeviceMemory,
+    physical_device: c.VkPhysicalDevice,
+    logical_device: c.VkDevice,
+    indices: []u16,
+) void {
+    const buffer_size: c.VkDeviceSize = @sizeOf(@TypeOf(indices[0])) * indices.len;
+
+    var staging_buffer: c.VkBuffer = null;
+    defer c.vkDestroyBuffer(logical_device, staging_buffer, null);
+    var staging_buffer_memory: c.VkDeviceMemory = null;
+    defer c.vkFreeMemory(logical_device, staging_buffer_memory, null);
+
+    createBuffer(
+        buffer_size,
+        c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buffer,
+        &staging_buffer_memory,
+        physical_device,
+        logical_device,
+    );
+
+    var data: ?*anyopaque = null;
+    if (c.vkMapMemory(logical_device, staging_buffer_memory, 0, buffer_size, 0, &data) != c.VK_SUCCESS) {
+        @panic("Failed to map staging memory!");
+    }
+    defer c.vkUnmapMemory(logical_device, staging_buffer_memory);
+
+    // Cast the void pointer to a byte slice destination
+    const dst: [*]u8 = @ptrCast(data.?);
+    // Get the vertices as a byte slice source
+    const src: [*]const u8 = @ptrCast(indices.ptr);
+    @memcpy(dst[0..buffer_size], src[0..buffer_size]);
+
+    createBuffer(
+        buffer_size,
+        c.VK_BUFFER_USAGE_TRANSFER_DST_BIT | c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        index_buffer,
+        index_buffer_memory,
+        physical_device,
+        logical_device,
+    );
+
+    copyBuffer(
+        &staging_buffer,
+        index_buffer,
+        buffer_size,
+        logical_device,
+        command_pool,
+        graphics_queue,
+    );
+}
+
+/// copy from CPU (staging) to device (vertex_buffer)
+fn createVertexBuffer(
+    command_pool: *c.VkCommandPool,
+    graphics_queue: *c.VkQueue,
+    vertex_buffer: *c.VkBuffer,
+    vertex_buffer_memory: *c.VkDeviceMemory,
+    physical_device: c.VkPhysicalDevice,
+    logical_device: c.VkDevice,
+    vertices: []Vertex,
+) void {
+    const buffer_size: c.VkDeviceSize = @sizeOf(@TypeOf(vertices[0])) * vertices.len;
+
+    var staging_buffer: c.VkBuffer = null;
+    defer c.vkDestroyBuffer(logical_device, staging_buffer, null);
+    var staging_buffer_memory: c.VkDeviceMemory = null;
+    defer c.vkFreeMemory(logical_device, staging_buffer_memory, null);
+    createBuffer(
+        buffer_size,
+        c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buffer,
+        &staging_buffer_memory,
+        physical_device,
+        logical_device,
+    );
+
+    var data: ?*anyopaque = null;
+    if (c.vkMapMemory(logical_device, staging_buffer_memory, 0, buffer_size, 0, &data) != c.VK_SUCCESS) {
+        @panic("Failed to map staging memory!");
+    }
+    defer c.vkUnmapMemory(logical_device, staging_buffer_memory);
+
+    // Cast the void pointer to a byte slice destination
+    const dst: [*]u8 = @ptrCast(data.?);
+    // Get the vertices as a byte slice source
+    const src: [*]const u8 = @ptrCast(vertices.ptr);
+    @memcpy(dst[0..buffer_size], src[0..buffer_size]);
+
+    createBuffer(
+        buffer_size,
+        c.VK_BUFFER_USAGE_TRANSFER_DST_BIT | c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        vertex_buffer,
+        vertex_buffer_memory,
+        physical_device,
+        logical_device,
+    );
+    copyBuffer(
+        &staging_buffer,
+        vertex_buffer,
+        buffer_size,
+        logical_device,
+        command_pool,
+        graphics_queue,
+    );
+}
+
+fn createBuffer(
+    size: c.VkDeviceSize,
+    usage: c.VkBufferUsageFlags,
+    properties: c.VkMemoryPropertyFlags,
+    buffer: *c.VkBuffer,
+    buffer_memory: *c.VkDeviceMemory,
+    physical_device: c.VkPhysicalDevice,
+    logical_device: c.VkDevice,
+) void {
+    const buffer_info: c.VkBufferCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    if (c.vkCreateBuffer(logical_device, &buffer_info, null, buffer) != c.VK_SUCCESS) {
+        @panic("failed to create buffer!");
+    }
+
+    var mem_requirements: c.VkMemoryRequirements = undefined;
+    c.vkGetBufferMemoryRequirements(logical_device, buffer.*, &mem_requirements);
+
+    var mem_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
+    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
+
+    const alloc_info: c.VkMemoryAllocateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = findMemoryType(mem_requirements.memoryTypeBits, mem_properties, properties),
+    };
+
+    if (c.vkAllocateMemory(logical_device, &alloc_info, null, buffer_memory) != c.VK_SUCCESS) {
+        @panic("failed to allocate buffer memory!");
+    }
+
+    _ = c.vkBindBufferMemory(logical_device, buffer.*, buffer_memory.*, 0);
+}
+
+fn copyBuffer(
+    src_buffer: *c.VkBuffer,
+    dst_buffer: *c.VkBuffer,
+    size: c.VkDeviceSize,
+    logical_device: c.VkDevice,
+    command_pool: *c.VkCommandPool,
+    graphics_queue: *c.VkQueue,
+) void {
+    const alloc_info: c.VkCommandBufferAllocateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = command_pool.*,
+        .commandBufferCount = 1,
+    };
+
+    var command_buffer: c.VkCommandBuffer = null;
+    if (c.vkAllocateCommandBuffers(logical_device, &alloc_info, &command_buffer) != c.VK_SUCCESS) {
+        @panic("Couldn't allocate command buffer!");
+    }
+    defer c.vkFreeCommandBuffers(logical_device, command_pool.*, 1, &command_buffer);
+
+    const begin_info: c.VkCommandBufferBeginInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (c.vkBeginCommandBuffer(command_buffer, &begin_info) != c.VK_SUCCESS) {
+        @panic("Couldn't begin command buffer context!");
+    }
+    {
+        defer if (c.vkEndCommandBuffer(command_buffer) != c.VK_SUCCESS) {
+            @panic("Couldn't end command buffer context!");
+        };
+
+        const copy_region: c.VkBufferCopy = .{
+            .srcOffset = 0, // Optional
+            .dstOffset = 0, // Optional
+            .size = size,
+        };
+        c.vkCmdCopyBuffer(command_buffer, src_buffer.*, dst_buffer.*, 1, &copy_region);
+    }
+
+    const submit_info: c.VkSubmitInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+    };
+
+    if (c.vkQueueSubmit(graphics_queue.*, 1, &submit_info, null) != c.VK_SUCCESS) {
+        @panic("Failed submitting to graphics queue!");
+    }
+    if (c.vkQueueWaitIdle(graphics_queue.*) != c.VK_SUCCESS) {
+        @panic("Waiting for graphics queue failed!");
     }
 }
