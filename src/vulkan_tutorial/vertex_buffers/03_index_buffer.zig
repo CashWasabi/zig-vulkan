@@ -103,6 +103,7 @@ const Vertex = packed struct {
         return attribute_descriptions;
     }
 };
+const VertexIndex = u16; // can also be u32!
 
 fn handleSigint(sig: c_int) callconv(C) void {
     _ = sig;
@@ -714,8 +715,7 @@ pub fn main() !void {
             .color = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
         },
     };
-    // can also be u32
-    var vertex_indices: [6]u16 = [_]u16{ 0, 1, 2, 2, 3, 0 };
+    var vertex_indices: [6]VertexIndex = [_]VertexIndex{ 0, 1, 2, 2, 3, 0 };
 
     var vertex_buffer: c.VkBuffer = null;
     defer c.vkDestroyBuffer(logical_device, vertex_buffer, null);
@@ -825,7 +825,6 @@ pub fn main() !void {
             graphics_pipeline,
             vertex_buffer,
             index_buffer,
-            // &vertices,
             &vertex_indices,
         );
 
@@ -1193,8 +1192,7 @@ pub fn recordCommandBuffer(
     graphics_pipeline: c.VkPipeline,
     vertex_buffer: c.VkBuffer,
     index_buffer: c.VkBuffer,
-    // vertices: []Vertex,
-    vertex_indices: []u16,
+    vertex_indices: []VertexIndex,
 ) void {
     // begin render pass
     var command_buffer_begin_info: c.VkCommandBufferBeginInfo = .{
