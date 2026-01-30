@@ -23,6 +23,9 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
 
+    // include third_party libs
+    exe.addIncludePath(b.path("third_party")); // link the library
+
     // include vulkan
     exe.linkSystemLibrary("vulkan"); // link the library
 
