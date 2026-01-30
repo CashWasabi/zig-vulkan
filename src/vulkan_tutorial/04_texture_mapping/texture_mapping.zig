@@ -25,11 +25,11 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 // enable validation layers for debug mode
 const ENABLE_VALIDATION_LAYERS: bool = builtin.mode == .Debug;
 
-var VALIDATION_LAYERS = [_][:0]const u8{
+var VALIDATION_LAYERS = [_][*c]const u8{
     "VK_LAYER_KHRONOS_validation",
 };
 
-var DEVICE_EXTENSIONS = [_][:0]const u8{
+var DEVICE_EXTENSIONS = [_][*c]const u8{
     c.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
@@ -306,6 +306,7 @@ const Context = struct {
     graphics_queue: c.VkQueue = null,
     present_queue: c.VkQueue = null,
 
+    pipeline_layout: c.VkPipelineLayout = null,
     graphics_pipeline: c.VkPipeline = null,
     swap_chain: c.VkSwapchainKHR = null,
     render_pass: c.VkRenderPass = null,
@@ -1112,7 +1113,7 @@ const Context = struct {
         var dynamic_state_create_info: c.VkPipelineDynamicStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
             .dynamicStateCount = @intCast(DYNAMIC_STATES.len),
-            .pDynamicStates = DYNAMIC_STATES[0..].ptr,
+            .pDynamicStates = DYNAMIC_STATES[0..],
         };
 
         const binding_description = Vertex.getBindingDescription();
@@ -1213,8 +1214,7 @@ const Context = struct {
         color_blending.blendConstants[2] = 0.0; // Optional
         color_blending.blendConstants[3] = 0.0; // Optional
 
-        var pipeline_layout: c.VkPipelineLayout = null;
-        defer c.vkDestroyPipelineLayout(self.logical_device, pipeline_layout, null);
+        defer c.vkDestroyPipelineLayout(self.logical_device, self.pipeline_layout, null);
         var pipeline_layout_create_info: c.VkPipelineLayoutCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
@@ -1227,7 +1227,7 @@ const Context = struct {
             self.logical_device,
             &pipeline_layout_create_info,
             null,
-            &pipeline_layout,
+            &self.pipeline_layout,
         ) != c.VK_SUCCESS) {
             @panic("failed to create pipeline layout!");
         }
@@ -1246,7 +1246,7 @@ const Context = struct {
             .pDepthStencilState = null, // Optional
             .pColorBlendState = &color_blending,
             .pDynamicState = &dynamic_state_create_info,
-            .layout = pipeline_layout,
+            .layout = self.pipeline_layout,
             .renderPass = self.render_pass,
             .subpass = 0,
             .basePipelineHandle = null, // Optional
@@ -1774,7 +1774,7 @@ const Context = struct {
                 self.pipeline_layout,
                 0,
                 1,
-                self.descriptor_set,
+                &self.descriptor_sets,
                 0,
                 null,
             );
