@@ -25,7 +25,7 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 // enable validation layers for debug mode
 const ENABLE_VALIDATION_LAYERS: bool = builtin.mode == .Debug;
 
-var VALIDATION_LAYERS = [_][*c]const u8{
+const VALIDATION_LAYERS = [_][*c]const u8{
     "VK_LAYER_KHRONOS_validation",
 };
 
@@ -314,6 +314,9 @@ const Context = struct {
     command_pool: c.VkCommandPool = null,
     descriptor_pool: c.VkDescriptorPool = null,
 
+    vert_shader_module: c.VkShaderModule = null,
+    frag_shader_module: c.VkShaderModule = null,
+
     index_buffer: c.VkBuffer = null,
     index_buffer_memory: c.VkDeviceMemory = null,
     vertex_buffer: c.VkBuffer = null,
@@ -408,14 +411,23 @@ const Context = struct {
             c.vkDestroyFence(self.logical_device, self.in_flight_fences[i], null);
         }
 
+        c.vkDestroyShaderModule(self.logical_device, self.vert_shader_module, null);
+        c.vkDestroyShaderModule(self.logical_device, self.frag_shader_module, null);
+
         // cleanup bufffers
         c.vkDestroyBuffer(self.logical_device, self.index_buffer, null);
         c.vkFreeMemory(self.logical_device, self.index_buffer_memory, null);
         c.vkDestroyBuffer(self.logical_device, self.vertex_buffer, null);
         c.vkFreeMemory(self.logical_device, self.vertex_buffer_memory, null);
 
-        // cleanup command pool
+        c.vkDestroyDescriptorSetLayout(self.logical_device, self.descriptor_set_layout, null);
+
+        // cleanup pools
+        c.vkDestroyDescriptorPool(self.logical_device, self.descriptor_pool, null);
         c.vkDestroyCommandPool(self.logical_device, self.command_pool, null);
+
+        c.vkDestroyPipeline(self.logical_device, self.graphics_pipeline, null);
+        c.vkDestroyPipelineLayout(self.logical_device, self.pipeline_layout, null);
 
         // cleanup frame buffers
         for (self.swap_chain_framebuffers.items) |swap_chain_framebuffer| {
@@ -429,6 +441,10 @@ const Context = struct {
         }
         self.swap_chain_image_views.deinit(allocator);
         self.swap_chain_images.deinit(allocator);
+
+        c.vkDestroyRenderPass(self.logical_device, self.render_pass, null);
+
+        c.vkDestroySwapchainKHR(self.logical_device, self.swap_chain, null);
 
         // destroy logical_device
         c.vkDestroyDevice(self.logical_device, null);
@@ -534,6 +550,7 @@ const Context = struct {
             image_index,
             self.vertex_buffer,
             self.index_buffer,
+            frame,
         );
 
         var wait_semaphores = [_]c.VkSemaphore{self.image_available_semaphores[frame]};
@@ -620,7 +637,7 @@ const Context = struct {
         // SETUP VALIDATION LAYERS (OPTIONAL)
         var debug_create_info: c.VkDebugUtilsMessengerCreateInfoEXT = .{};
         if (ENABLE_VALIDATION_LAYERS) {
-            create_info.ppEnabledLayerNames = &VALIDATION_LAYERS[0..].ptr;
+            create_info.ppEnabledLayerNames = VALIDATION_LAYERS[0..].ptr;
 
             populateDebugMessengerCreateInfo(&debug_create_info);
             create_info.pNext = &debug_create_info;
@@ -677,7 +694,7 @@ const Context = struct {
             @panic("failed calling vkEnumeratePhysicalDevices while getting devices!");
         }
         for (devices) |device| {
-            if (try isDeviceSuitable(allocator, self.physical_device, self.surface)) {
+            if (try isDeviceSuitable(allocator, device, self.surface)) {
                 self.physical_device = device;
                 break;
             }
@@ -757,6 +774,30 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create logical device!");
         }
+
+        // TODO: MOVE THIS INTO ITS OWN THING ?
+        // CREATE GRAPHICS QUEUE
+        // CREATE PRESENT QUEUE
+
+        // ======================
+        // CREATE GRAPHICS QUEUE
+        // ======================
+        c.vkGetDeviceQueue(
+            self.logical_device,
+            self.queue_familiy_indices.graphics_family.?,
+            0,
+            &self.graphics_queue,
+        );
+
+        // =====================
+        // CREATE PRESENT QUEUE
+        // =====================
+        c.vkGetDeviceQueue(
+            self.logical_device,
+            self.queue_familiy_indices.present_family.?,
+            0,
+            &self.present_queue,
+        );
     }
 
     fn createSwapChain(self: *Context) !void {
@@ -807,16 +848,14 @@ const Context = struct {
             swap_chain_create_info.pQueueFamilyIndices = null; // Optional
         }
 
-        var swap_chain: c.VkSwapchainKHR = null;
         if (c.vkCreateSwapchainKHR(
             self.logical_device,
             &swap_chain_create_info,
             null,
-            &swap_chain,
+            &self.swap_chain,
         ) != c.VK_SUCCESS) {
             @panic("failed to create swap chain!");
         }
-        defer c.vkDestroySwapchainKHR(self.logical_device, swap_chain, null);
 
         var swap_chain_image_count: u32 = 0;
         if (c.vkGetSwapchainImagesKHR(
@@ -899,8 +938,6 @@ const Context = struct {
             .pColorAttachments = &color_attachment_ref,
         };
 
-        defer c.vkDestroyRenderPass(self.logical_device, self.render_pass, null);
-
         var render_pass_create_info: c.VkRenderPassCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .attachmentCount = 1,
@@ -940,7 +977,6 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create descriptor set layout!");
         }
-        defer c.vkDestroyDescriptorSetLayout(self.logical_device, self.descriptor_set_layout, null);
     }
 
     fn createDescriptorPool(self: *Context) void {
@@ -964,12 +1000,9 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create descriptor pool!");
         }
-        defer c.vkDestroyDescriptorPool(self.logical_device, self.descriptor_pool, null);
     }
 
     fn createDescriptorSets(self: *Context) void {
-        var descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet = undefined;
-
         // TODO: is this a correct translation?
         // std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
         const descriptor_set_layouts = [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSetLayout{
@@ -987,7 +1020,7 @@ const Context = struct {
         if (c.vkAllocateDescriptorSets(
             self.logical_device,
             &descriptor_set_alloc_info,
-            &descriptor_sets,
+            &self.descriptor_sets,
         ) != c.VK_SUCCESS) {
             @panic("failed to allocate descriptor sets!");
         }
@@ -1001,7 +1034,7 @@ const Context = struct {
 
             const descriptor_write: c.VkWriteDescriptorSet = .{
                 .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptor_sets[i],
+                .dstSet = self.descriptor_sets[i],
                 .dstBinding = 0,
                 .dstArrayElement = 0,
                 .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1080,13 +1113,12 @@ const Context = struct {
         const vert_shader_code = @embedFile("spv/vert.spv");
         const vert_shader_code_aligned = try loadSpirV(allocator, vert_shader_code);
         defer allocator.free(vert_shader_code_aligned);
-        const vert_shader_module = createShaderModule(self.logical_device, vert_shader_code_aligned);
-        defer c.vkDestroyShaderModule(self.logical_device, vert_shader_module, null);
+        self.vert_shader_module = createShaderModule(self.logical_device, vert_shader_code_aligned);
 
         const vert_shader_stage_info: c.VkPipelineShaderStageCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = c.VK_SHADER_STAGE_VERTEX_BIT,
-            .module = vert_shader_module,
+            .module = self.vert_shader_module,
             .pName = "main",
         };
 
@@ -1094,13 +1126,12 @@ const Context = struct {
         const frag_shader_code = @embedFile("spv/frag.spv");
         const frag_shader_code_aligned = try loadSpirV(allocator, frag_shader_code);
         defer allocator.free(frag_shader_code_aligned);
-        const frag_shader_module = createShaderModule(self.logical_device, frag_shader_code_aligned);
-        defer c.vkDestroyShaderModule(self.logical_device, frag_shader_module, null);
+        self.frag_shader_module = createShaderModule(self.logical_device, frag_shader_code_aligned);
 
         const frag_shader_stage_info: c.VkPipelineShaderStageCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT,
-            .module = frag_shader_module,
+            .module = self.frag_shader_module,
             .pName = "main",
         };
 
@@ -1214,7 +1245,6 @@ const Context = struct {
         color_blending.blendConstants[2] = 0.0; // Optional
         color_blending.blendConstants[3] = 0.0; // Optional
 
-        defer c.vkDestroyPipelineLayout(self.logical_device, self.pipeline_layout, null);
         var pipeline_layout_create_info: c.VkPipelineLayoutCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
@@ -1263,7 +1293,6 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create graphics pipeline!");
         }
-        defer c.vkDestroyPipeline(self.logical_device, self.graphics_pipeline, null);
     }
 
     fn createFramebuffers(self: *Context) void {
@@ -1308,40 +1337,6 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create command pool!");
         }
-    }
-
-    // fn createDescriptorPool() {}
-
-    // fn createDescriptorSets() {}
-
-    // fn createCommandBuffers() {}
-
-    // fn createSyncObjects() {}
-
-    fn initGrapicsPipeline(self: *Context) void {
-        // ======================
-        // CREATE GRAPHICS QUEUE
-        // ======================
-        c.vkGetDeviceQueue(
-            self.logical_device,
-            self.queue_familiy_indices.graphics_family.?,
-            0,
-            &self.graphics_queue,
-        );
-
-        // =====================
-        // CREATE PRESENT QUEUE
-        // =====================
-        c.vkGetDeviceQueue(
-            self.logical_device,
-            self.queue_familiy_indices.present_family.?,
-            0,
-            &self.present_queue,
-        );
-    }
-
-    fn createImageTexture(self: *Context) void {
-        _ = self;
     }
 
     fn copyBuffer(self: *Context, src_buffer: c.VkBuffer, dst_buffer: c.VkBuffer, size: c.VkDeviceSize) void {
@@ -1694,6 +1689,7 @@ const Context = struct {
         image_index: u32,
         vertex_buffer: c.VkBuffer,
         index_buffer: c.VkBuffer,
+        current_frame: usize,
     ) void {
 
         // begin render pass
@@ -1774,7 +1770,7 @@ const Context = struct {
                 self.pipeline_layout,
                 0,
                 1,
-                &self.descriptor_sets,
+                &self.descriptor_sets[current_frame],
                 0,
                 null,
             );
@@ -1813,7 +1809,8 @@ pub fn checkValidationLayerSupport(allocator: std.mem.Allocator) !bool {
         var layer_found: bool = false;
         for (available_layers) |layer_properties| {
             var slices_eql: bool = true;
-            for (0..layer_name.len) |i| {
+            const layer_name_slice = std.mem.span(layer_name);
+            for (0..layer_name_slice.len) |i| {
                 if (layer_name[i] != layer_properties.layerName[i]) {
                     slices_eql = false;
                     break;
@@ -1971,25 +1968,21 @@ pub fn checkDeviceExtensionSupport(allocator: std.mem.Allocator, physical_device
         @panic("failed while calling vkEnumerateDeviceExtensionProperties in checkDeviceExtensionSupport for available_extensions lookup!");
     }
 
-    var required_extensions: std.ArrayList([:0]const u8) = .empty;
+    var required_extensions: std.ArrayList([*c]const u8) = .empty;
     defer required_extensions.deinit(allocator);
     for (DEVICE_EXTENSIONS) |ext| try required_extensions.append(allocator, ext);
 
-    // NOTE: dear god refactor this!
-    // we could just use slices and do std.mem.eql
-    // that way we can compare the buffer from extensionName with our [:0]const u8
     for (available_extensions) |ext| {
         var i = required_extensions.items.len;
         while (i > 0) {
             i -= 1;
-            var match: bool = true;
-            for (0..required_extensions.items[i].len) |j| {
-                if (required_extensions.items[i][j] != ext.extensionName[j]) {
-                    match = false;
-                    break;
-                }
+
+            const required_span = std.mem.span(required_extensions.items[i]);
+            const available_span = std.mem.sliceTo(&ext.extensionName, 0);
+
+            if (std.mem.eql(u8, required_span, available_span)) {
+                _ = required_extensions.swapRemove(i);
             }
-            if (match) _ = required_extensions.swapRemove(i); // if we have duplicates for some reason
         }
     }
 
