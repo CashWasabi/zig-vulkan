@@ -325,15 +325,33 @@ const Context = struct {
     vert_shader_module: c.VkShaderModule = null,
     frag_shader_module: c.VkShaderModule = null,
 
-    mip_levels: u32 = 0,
+    // const TextureRenderTarget = struct {
+    //     image: c.VkImage = null,
+    //     image_memory: c.VkDeviceMemory = null,
+    //     image_view: c.VkImageView = null,
+    // };
     texture_image: c.VkImage = null,
     texture_image_memory: c.VkDeviceMemory = null,
     texture_image_view: c.VkImageView = null,
     texture_sampler: c.VkSampler = null,
 
+    // const DepthRenderTarget = struct {
+    //     image: c.VkImage = null,
+    //     image_memory: c.VkDeviceMemory = null,
+    //     image_view: c.VkImageView = null,
+    // };
     depth_image: c.VkImage = null,
     depth_image_memory: c.VkDeviceMemory = null,
     depth_image_view: c.VkImageView = null,
+
+    // const ColorRenderTarget = struct {
+    //     image: c.VkImage = null,
+    //     image_memory: c.VkDeviceMemory = null,
+    //     image_view: c.VkImageView = null,
+    // };
+    color_image: c.VkImage = null,
+    color_image_memory: c.VkDeviceMemory = null,
+    color_image_view: c.VkImageView = null,
 
     vertex_buffer: c.VkBuffer = null,
     vertex_buffer_memory: c.VkDeviceMemory = null,
@@ -346,6 +364,9 @@ const Context = struct {
     model: Model = undefined,
 
     ubo: UniformBufferObject = .default,
+
+    mip_levels: u32 = 0,
+    msaa_samples: c.VkSampleCountFlagBits = c.VK_SAMPLE_COUNT_1_BIT,
 
     // ======================
     // per frame definitions
@@ -392,6 +413,7 @@ const Context = struct {
         self.createDescriptorSetLayout();
         self.createGraphicsPipeline() catch unreachable;
         self.createCommandPool();
+        self.createColorResources();
         self.createDepthResources();
         self.createFramebuffers();
         self.createTextureImage();
@@ -451,8 +473,6 @@ const Context = struct {
 
         // destroy logical_device
         c.vkDestroyDevice(self.logical_device, null);
-
-        // TODO: physical device?
 
         destroyDebugUtilsMessengerEXT(self.instance, self.debug_messenger, null);
 
@@ -522,7 +542,8 @@ const Context = struct {
         {
             // update UBO transform
             self.ubo.model = mat4Rotation(
-                dt * std.math.degreesToRadians(90),
+                // dt * std.math.degreesToRadians(90),
+                dt * std.math.degreesToRadians(30),
                 .{ .x = 0.0, .y = 0.0, .z = 1.0 },
             );
             self.ubo.view = mat4LookAt(
@@ -704,6 +725,7 @@ const Context = struct {
         for (devices) |device| {
             if (try isDeviceSuitable(allocator, device, self.surface)) {
                 self.physical_device = device;
+                self.msaa_samples = self.getMaxUsableSampleCount();
                 break;
             }
         }
@@ -784,10 +806,6 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create logical device!");
         }
-
-        // TODO: MOVE THIS INTO ITS OWN THING ?
-        // CREATE GRAPHICS QUEUE
-        // CREATE PRESENT QUEUE
 
         // ======================
         // CREATE GRAPHICS QUEUE
@@ -906,12 +924,17 @@ const Context = struct {
 
         try self.createSwapChain();
         self.createImageViews();
+        self.createColorResources();
         self.createDepthResources();
         self.createFramebuffers();
     }
 
     fn cleanupSwapChain(self: *Context) void {
         const allocator = self.dbga.allocator();
+
+        c.vkDestroyImageView(self.logical_device, self.color_image_view, null);
+        c.vkDestroyImage(self.logical_device, self.color_image, null);
+        c.vkFreeMemory(self.logical_device, self.color_image_memory, null);
 
         c.vkDestroyImageView(self.logical_device, self.depth_image_view, null);
         c.vkDestroyImage(self.logical_device, self.depth_image, null);
@@ -933,24 +956,36 @@ const Context = struct {
     fn createRenderPass(self: *Context) void {
         const color_attachment: c.VkAttachmentDescription = .{
             .format = self.swap_chain_image_format,
-            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .samples = self.msaa_samples,
             .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp = c.VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            // .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .finalLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
 
         const depth_attachment: c.VkAttachmentDescription = .{
             .format = self.findDepthFormat(),
-            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .samples = self.msaa_samples,
             .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
             .finalLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+
+        const color_attachment_resolve: c.VkAttachmentDescription = .{
+            .format = self.swap_chain_image_format,
+            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .storeOp = c.VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         };
 
         var color_attachment_ref: c.VkAttachmentReference = .{
@@ -963,23 +998,29 @@ const Context = struct {
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
 
+        var color_attachment_resolve_ref: c.VkAttachmentReference = .{
+            .attachment = 2,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+
         var subpass: c.VkSubpassDescription = .{
             .pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS,
             .colorAttachmentCount = 1,
             .pColorAttachments = &color_attachment_ref,
             .pDepthStencilAttachment = &depth_attachment_ref,
+            .pResolveAttachments = &color_attachment_resolve_ref,
         };
 
         var dependency: c.VkSubpassDependency = .{
             .srcSubpass = c.VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
             .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            .srcAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .srcAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         };
 
-        var attachments = [_]c.VkAttachmentDescription{ color_attachment, depth_attachment };
+        var attachments = [_]c.VkAttachmentDescription{ color_attachment, depth_attachment, color_attachment_resolve };
         var render_pass_create_info: c.VkRenderPassCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .attachmentCount = attachments.len,
@@ -1067,8 +1108,6 @@ const Context = struct {
     }
 
     fn createDescriptorSets(self: *Context) void {
-        // TODO: is this a correct translation?
-        // std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
         const descriptor_set_layouts = [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSetLayout{
             self.descriptor_set_layout,
             self.descriptor_set_layout,
@@ -1214,11 +1253,10 @@ const Context = struct {
             .pName = "main",
         };
 
-        const shader_stages = try allocator.alloc(c.VkPipelineShaderStageCreateInfo, 2);
-        defer allocator.free(shader_stages);
-        shader_stages[0] = vert_shader_stage_info;
-        shader_stages[1] = frag_shader_stage_info;
-
+        var shader_stages = [2]c.VkPipelineShaderStageCreateInfo{
+            vert_shader_stage_info,
+            frag_shader_stage_info,
+        };
         // FIXED FUNCTIONS
         var dynamic_state_create_info: c.VkPipelineDynamicStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -1289,7 +1327,7 @@ const Context = struct {
         var multisampling_create_info: c.VkPipelineMultisampleStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             .sampleShadingEnable = c.VK_FALSE,
-            .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
+            .rasterizationSamples = self.msaa_samples,
             .minSampleShading = 1.0, // Optional
             .pSampleMask = null, // Optional
             .alphaToCoverageEnable = c.VK_FALSE, // Optional
@@ -1360,9 +1398,7 @@ const Context = struct {
         var pipeline_create_info: c.VkGraphicsPipelineCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             .stageCount = 2,
-            // TODO: would this work with static [_]shader_stages => shader_stages[0..].ptr ???
-            // then we could use it on the other "slices", too
-            .pStages = shader_stages.ptr,
+            .pStages = &shader_stages,
             .pVertexInputState = &vertex_input_info,
             .pInputAssemblyState = &input_assembly,
             .pViewportState = &viewport_state_create_info,
@@ -1396,8 +1432,9 @@ const Context = struct {
         self.swap_chain_framebuffers.resize(allocator, self.swap_chain_image_views.items.len) catch unreachable;
         for (0..self.swap_chain_image_views.items.len) |i| {
             var attachments = [_]c.VkImageView{
-                self.swap_chain_image_views.items[i],
+                self.color_image_view,
                 self.depth_image_view,
+                self.swap_chain_image_views.items[i],
             };
 
             var framebuffer_create_info: c.VkFramebufferCreateInfo = .{
@@ -1437,6 +1474,28 @@ const Context = struct {
         }
     }
 
+    fn createColorResources(self: *Context) void {
+        const color_format: c.VkFormat = self.swap_chain_image_format;
+        self.createImage(
+            self.swap_chain_extent.width,
+            self.swap_chain_extent.height,
+            1,
+            self.msaa_samples,
+            color_format,
+            c.VK_IMAGE_TILING_OPTIMAL,
+            c.VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self.color_image,
+            &self.color_image_memory,
+        );
+        self.color_image_view = self.createImageView(
+            self.color_image,
+            color_format,
+            c.VK_IMAGE_ASPECT_COLOR_BIT,
+            1,
+        );
+    }
+
     fn createDepthResources(self: *Context) void {
         const depth_format: c.VkFormat = self.findDepthFormat();
 
@@ -1444,6 +1503,7 @@ const Context = struct {
             self.swap_chain_extent.width,
             self.swap_chain_extent.height,
             1,
+            self.msaa_samples,
             depth_format,
             c.VK_IMAGE_TILING_OPTIMAL,
             c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1858,6 +1918,7 @@ const Context = struct {
             @intCast(texture_width),
             @intCast(texture_height),
             self.mip_levels,
+            c.VK_SAMPLE_COUNT_1_BIT,
             c.VK_FORMAT_R8G8B8A8_SRGB,
             c.VK_IMAGE_TILING_OPTIMAL,
             c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -2015,6 +2076,7 @@ const Context = struct {
         width: u32,
         height: u32,
         mip_levels: u32,
+        num_samples: c.VkSampleCountFlagBits,
         format: c.VkFormat,
         tiling: c.VkImageTiling,
         usage: c.VkImageUsageFlags,
@@ -2037,7 +2099,7 @@ const Context = struct {
             .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
             .usage = usage,
             .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
-            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .samples = num_samples,
             .flags = 0, // Optional
         };
         if (c.vkCreateImage(
@@ -2334,6 +2396,38 @@ const Context = struct {
         );
 
         self.endSingleTimeCommands(command_buffer);
+    }
+
+    fn getMaxUsableSampleCount(self: *Context) c.VkSampleCountFlagBits {
+        var physical_device_properties: c.VkPhysicalDeviceProperties = .{};
+        c.vkGetPhysicalDeviceProperties(
+            self.physical_device,
+            &physical_device_properties,
+        );
+
+        const counts: c.VkSampleCountFlags = (physical_device_properties.limits.framebufferColorSampleCounts &
+            physical_device_properties.limits.framebufferDepthSampleCounts);
+
+        if (counts & c.VK_SAMPLE_COUNT_64_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_64_BIT;
+        }
+        if (counts & c.VK_SAMPLE_COUNT_32_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_32_BIT;
+        }
+        if (counts & c.VK_SAMPLE_COUNT_16_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_16_BIT;
+        }
+        if (counts & c.VK_SAMPLE_COUNT_8_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_8_BIT;
+        }
+        if (counts & c.VK_SAMPLE_COUNT_4_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_4_BIT;
+        }
+        if (counts & c.VK_SAMPLE_COUNT_2_BIT == 1) {
+            return c.VK_SAMPLE_COUNT_2_BIT;
+        }
+
+        return c.VK_SAMPLE_COUNT_1_BIT;
     }
 };
 
