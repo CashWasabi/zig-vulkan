@@ -1,4 +1,7 @@
-const texture_mapping_main = @import("vulkan_tutorial/04_texture_mapping/texture_mapping.zig").main;
+const std = @import("std");
+
+const run = @import("vulkan_tutorial/07_generating_mipmaps/generating_mipmaps.zig").main;
+
 pub fn main() !void {
-    try texture_mapping_main();
+    try run();
 }

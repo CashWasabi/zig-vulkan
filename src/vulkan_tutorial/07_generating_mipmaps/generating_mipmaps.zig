@@ -6,8 +6,10 @@ const c = @cImport({
     // Disable SIMD to fix alignment issues with Zig's cImport
     @cDefine("STBI_NO_SIMD", "");
     // some implementations have issues so we only want to enable necessary formats
-    @cDefine("STBI_ONLY_JPEG", "");
+    // @cDefine("STBI_ONLY_JPEG", "");
+    @cDefine("STBI_ONLY_PNG", "");
     @cInclude("stb_image.h");
+
     @cDefine("GLFW_INCLUDE_VULKAN", "");
     @cInclude("signal.h");
     @cInclude("GLFW/glfw3.h");
@@ -16,6 +18,7 @@ const c = @cImport({
 
 const C = std.builtin.CallingConvention.c;
 const std = @import("std");
+const obj = @import("obj");
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -69,7 +72,7 @@ const Vec4 = extern struct { x: f32, y: f32, z: f32, w: f32 };
 
 const VertexIndex = u16; // can also be u32!
 const Vertex = extern struct {
-    pos: Vec2,
+    pos: Vec3,
     color: Vec3,
     texCoord: Vec2,
 
@@ -87,7 +90,7 @@ const Vertex = extern struct {
             .{
                 .binding = 0,
                 .location = 0,
-                .format = c.VK_FORMAT_R32G32_SFLOAT,
+                .format = c.VK_FORMAT_R32G32B32_SFLOAT,
                 .offset = @offsetOf(Vertex, "pos"),
             },
             .{
@@ -322,38 +325,26 @@ const Context = struct {
     vert_shader_module: c.VkShaderModule = null,
     frag_shader_module: c.VkShaderModule = null,
 
-    index_buffer: c.VkBuffer = null,
-    index_buffer_memory: c.VkDeviceMemory = null,
-    vertex_buffer: c.VkBuffer = null,
-    vertex_buffer_memory: c.VkDeviceMemory = null,
+    mip_levels: u32 = 0,
     texture_image: c.VkImage = null,
     texture_image_memory: c.VkDeviceMemory = null,
     texture_image_view: c.VkImageView = null,
     texture_sampler: c.VkSampler = null,
 
-    vertices: []const Vertex = &[_]Vertex{
-        .{
-            .pos = .{ .x = -0.5, .y = -0.5 },
-            .color = .{ .x = 1.0, .y = 0.0, .z = 0.0 },
-            .texCoord = .{ .x = 1, .y = 0 },
-        },
-        .{
-            .pos = .{ .x = 0.5, .y = -0.5 },
-            .color = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
-            .texCoord = .{ .x = 0, .y = 0 },
-        },
-        .{
-            .pos = .{ .x = 0.5, .y = 0.5 },
-            .color = .{ .x = 0.0, .y = 0.0, .z = 1.0 },
-            .texCoord = .{ .x = 0, .y = 1 },
-        },
-        .{
-            .pos = .{ .x = -0.5, .y = 0.5 },
-            .color = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
-            .texCoord = .{ .x = 1, .y = 1 },
-        },
-    },
-    indices: []const VertexIndex = &[_]VertexIndex{ 0, 1, 2, 2, 3, 0 },
+    depth_image: c.VkImage = null,
+    depth_image_memory: c.VkDeviceMemory = null,
+    depth_image_view: c.VkImageView = null,
+
+    vertex_buffer: c.VkBuffer = null,
+    vertex_buffer_memory: c.VkDeviceMemory = null,
+
+    index_buffer: c.VkBuffer = null,
+    index_buffer_memory: c.VkDeviceMemory = null,
+
+    obj_data: obj.ObjData = undefined,
+    // material_data: obj.MaterialData = undefined,
+    model: Model = undefined,
+
     ubo: UniformBufferObject = .default,
 
     // ======================
@@ -400,11 +391,13 @@ const Context = struct {
         self.createRenderPass();
         self.createDescriptorSetLayout();
         self.createGraphicsPipeline() catch unreachable;
-        self.createFramebuffers();
         self.createCommandPool();
+        self.createDepthResources();
+        self.createFramebuffers();
         self.createTextureImage();
         self.createTextureImageView();
         self.createTextureSampler();
+        self.model = loadModel(self.dbga.allocator()) catch unreachable;
         self.createVertexBuffer();
         self.createIndexBuffer();
         self.createUniformBuffers();
@@ -417,6 +410,10 @@ const Context = struct {
     fn cleanup(self: *Context) void {
         const allocator = self.dbga.allocator();
 
+        self.cleanupSwapChain();
+
+        unloadModel(allocator, self.model);
+
         //clean up sync objects
         for (0..MAX_FRAMES_IN_FLIGHT) |i| {
             c.vkDestroySemaphore(self.logical_device, self.image_available_semaphores[i], null);
@@ -424,7 +421,6 @@ const Context = struct {
             c.vkDestroyFence(self.logical_device, self.in_flight_fences[i], null);
         }
 
-        c.vkDestroyImage(self.logical_device, self.texture_image, null);
         c.vkFreeMemory(self.logical_device, self.texture_image_memory, null);
 
         c.vkDestroyShaderModule(self.logical_device, self.vert_shader_module, null);
@@ -446,19 +442,7 @@ const Context = struct {
         c.vkDestroyPipelineLayout(self.logical_device, self.pipeline_layout, null);
 
         c.vkDestroySampler(self.logical_device, self.texture_sampler, null);
-        c.vkDestroyImageView(self.logical_device, self.texture_image_view, null);
 
-        // cleanup frame buffers
-        for (self.swap_chain_framebuffers.items) |swap_chain_framebuffer| {
-            c.vkDestroyFramebuffer(self.logical_device, swap_chain_framebuffer, null);
-        }
-        self.swap_chain_framebuffers.deinit(allocator);
-
-        // cleanup swap chain
-        for (self.swap_chain_image_views.items) |swap_chain_image_view| {
-            c.vkDestroyImageView(self.logical_device, swap_chain_image_view, null);
-        }
-        self.swap_chain_image_views.deinit(allocator);
         self.swap_chain_images.deinit(allocator);
 
         c.vkDestroyRenderPass(self.logical_device, self.render_pass, null);
@@ -519,14 +503,18 @@ const Context = struct {
         }
 
         var image_index: u32 = 0;
-        if (c.vkAcquireNextImageKHR(
+        const result = c.vkAcquireNextImageKHR(
             self.logical_device,
             self.swap_chain,
             c.UINT64_MAX,
             self.image_available_semaphores[frame],
             null,
             &image_index,
-        ) != c.VK_SUCCESS) {
+        );
+        if (result == c.VK_ERROR_OUT_OF_DATE_KHR) {
+            self.recreateSwapChain() catch unreachable;
+            return;
+        } else if (result != c.VK_SUCCESS and result != c.VK_SUBOPTIMAL_KHR) {
             @panic("failed while trying to aquire next image_khr in main loop.");
         }
 
@@ -636,7 +624,7 @@ const Context = struct {
 
         var app_info: c.VkApplicationInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            .pApplicationName = "Hello Uniform Buffers",
+            .pApplicationName = "Hello Loading Models",
             .applicationVersion = c.VK_MAKE_VERSION(1, 0, 0),
             .pEngineName = "No Engine",
             .engineVersion = c.VK_MAKE_VERSION(1, 0, 0),
@@ -902,8 +890,48 @@ const Context = struct {
         self.swap_chain_extent = extent;
     }
 
+    fn recreateSwapChain(self: *Context) !void {
+        var width: i32 = 0;
+        var height: i32 = 0;
+        while (width == 0 or height == 0) {
+            c.glfwGetFramebufferSize(self.window, &width, &height);
+            c.glfwWaitEvents();
+        }
+
+        if (c.vkDeviceWaitIdle(self.logical_device) != c.VK_SUCCESS) {
+            @panic("failed waiting on device.");
+        }
+
+        self.cleanupSwapChain();
+
+        try self.createSwapChain();
+        self.createImageViews();
+        self.createDepthResources();
+        self.createFramebuffers();
+    }
+
+    fn cleanupSwapChain(self: *Context) void {
+        const allocator = self.dbga.allocator();
+
+        c.vkDestroyImageView(self.logical_device, self.depth_image_view, null);
+        c.vkDestroyImage(self.logical_device, self.depth_image, null);
+        c.vkFreeMemory(self.logical_device, self.depth_image_memory, null);
+
+        for (self.swap_chain_framebuffers.items) |framebuffer| {
+            c.vkDestroyFramebuffer(self.logical_device, framebuffer, null);
+        }
+        self.swap_chain_framebuffers.deinit(allocator);
+
+        for (self.swap_chain_image_views.items) |image_view| {
+            c.vkDestroyImageView(self.logical_device, image_view, null);
+        }
+        self.swap_chain_image_views.deinit(allocator);
+
+        c.vkDestroySwapchainKHR(self.logical_device, self.swap_chain, null);
+    }
+
     fn createRenderPass(self: *Context) void {
-        var color_attachment: c.VkAttachmentDescription = .{
+        const color_attachment: c.VkAttachmentDescription = .{
             .format = self.swap_chain_image_format,
             .samples = c.VK_SAMPLE_COUNT_1_BIT,
             .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -914,24 +942,54 @@ const Context = struct {
             .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         };
 
+        const depth_attachment: c.VkAttachmentDescription = .{
+            .format = self.findDepthFormat(),
+            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+
         var color_attachment_ref: c.VkAttachmentReference = .{
             .attachment = 0,
             .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        var depth_attachment_ref: c.VkAttachmentReference = .{
+            .attachment = 1,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
 
         var subpass: c.VkSubpassDescription = .{
             .pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS,
             .colorAttachmentCount = 1,
             .pColorAttachments = &color_attachment_ref,
+            .pDepthStencilAttachment = &depth_attachment_ref,
         };
 
+        var dependency: c.VkSubpassDependency = .{
+            .srcSubpass = c.VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        };
+
+        var attachments = [_]c.VkAttachmentDescription{ color_attachment, depth_attachment };
         var render_pass_create_info: c.VkRenderPassCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = 1,
-            .pAttachments = &color_attachment,
+            .attachmentCount = attachments.len,
+            .pAttachments = &attachments,
             .subpassCount = 1,
             .pSubpasses = &subpass,
+            .dependencyCount = 1,
+            .pDependencies = &dependency,
         };
+
         if (c.vkCreateRenderPass(
             self.logical_device,
             &render_pass_create_info,
@@ -1269,6 +1327,19 @@ const Context = struct {
         color_blending.blendConstants[2] = 0.0; // Optional
         color_blending.blendConstants[3] = 0.0; // Optional
 
+        var depth_stencil: c.VkPipelineDepthStencilStateCreateInfo = .{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .depthTestEnable = c.VK_TRUE,
+            .depthWriteEnable = c.VK_TRUE,
+            .depthCompareOp = c.VK_COMPARE_OP_LESS,
+            .depthBoundsTestEnable = c.VK_FALSE,
+            .minDepthBounds = 0, // Optional
+            .maxDepthBounds = 1, // Optional
+            .stencilTestEnable = c.VK_FALSE,
+            .front = .{}, // Optional
+            .back = .{}, // Optional
+        };
+
         var pipeline_layout_create_info: c.VkPipelineLayoutCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
@@ -1297,7 +1368,7 @@ const Context = struct {
             .pViewportState = &viewport_state_create_info,
             .pRasterizationState = &rasterizer_create_info,
             .pMultisampleState = &multisampling_create_info,
-            .pDepthStencilState = null, // Optional
+            .pDepthStencilState = &depth_stencil,
             .pColorBlendState = &color_blending,
             .pDynamicState = &dynamic_state_create_info,
             .layout = self.pipeline_layout,
@@ -1324,13 +1395,16 @@ const Context = struct {
 
         self.swap_chain_framebuffers.resize(allocator, self.swap_chain_image_views.items.len) catch unreachable;
         for (0..self.swap_chain_image_views.items.len) |i| {
+            var attachments = [_]c.VkImageView{
+                self.swap_chain_image_views.items[i],
+                self.depth_image_view,
+            };
+
             var framebuffer_create_info: c.VkFramebufferCreateInfo = .{
                 .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 .renderPass = self.render_pass,
-                .attachmentCount = 1,
-                // NOTE: small hack to have a 1 item sized slice that can coerce to a [*c] bu using .ptr
-                //       not sure if this actually works or just sends garbage over!
-                .pAttachments = self.swap_chain_image_views.items[i .. i + 1].ptr,
+                .attachmentCount = attachments.len,
+                .pAttachments = &attachments,
                 .width = self.swap_chain_extent.width,
                 .height = self.swap_chain_extent.height,
                 .layers = 1,
@@ -1361,6 +1435,37 @@ const Context = struct {
         ) != c.VK_SUCCESS) {
             @panic("failed to create command pool!");
         }
+    }
+
+    fn createDepthResources(self: *Context) void {
+        const depth_format: c.VkFormat = self.findDepthFormat();
+
+        self.createImage(
+            self.swap_chain_extent.width,
+            self.swap_chain_extent.height,
+            1,
+            depth_format,
+            c.VK_IMAGE_TILING_OPTIMAL,
+            c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self.depth_image,
+            &self.depth_image_memory,
+        );
+
+        self.transitionImageLayout(
+            self.depth_image,
+            depth_format,
+            c.VK_IMAGE_LAYOUT_UNDEFINED,
+            c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            1,
+        );
+
+        self.depth_image_view = self.createImageView(
+            self.depth_image,
+            depth_format,
+            c.VK_IMAGE_ASPECT_DEPTH_BIT,
+            1,
+        );
     }
 
     fn copyBuffer(self: *Context, src_buffer: c.VkBuffer, dst_buffer: c.VkBuffer, size: c.VkDeviceSize) void {
@@ -1462,7 +1567,7 @@ const Context = struct {
     }
 
     fn createIndexBuffer(self: *Context) void {
-        const buffer_size: c.VkDeviceSize = @sizeOf(@TypeOf(self.indices[0])) * self.indices.len;
+        const buffer_size: c.VkDeviceSize = @sizeOf(VertexIndex) * self.model.indices.len;
 
         var staging_buffer: c.VkBuffer = null;
         defer c.vkDestroyBuffer(self.logical_device, staging_buffer, null);
@@ -1493,7 +1598,7 @@ const Context = struct {
         // Cast the void pointer to a byte slice destination
         const dst: [*]u8 = @ptrCast(data.?);
         // Get the vertices as a byte slice source
-        const src: [*]const u8 = @ptrCast(self.indices.ptr);
+        const src: [*]const u8 = @ptrCast(self.model.indices.ptr);
         @memcpy(dst[0..buffer_size], src[0..buffer_size]);
 
         self.createBuffer(
@@ -1508,7 +1613,7 @@ const Context = struct {
     }
 
     fn createVertexBuffer(self: *Context) void {
-        const buffer_size: c.VkDeviceSize = @sizeOf(@TypeOf(self.vertices[0])) * self.vertices.len;
+        const buffer_size: c.VkDeviceSize = @sizeOf(Vertex) * self.model.vertices.len;
 
         var staging_buffer: c.VkBuffer = null;
         defer c.vkDestroyBuffer(self.logical_device, staging_buffer, null);
@@ -1538,7 +1643,7 @@ const Context = struct {
         // Cast the void pointer to a byte slice destination
         const dst: [*]u8 = @ptrCast(data.?);
         // Get the vertices as a byte slice source
-        const src: [*]const u8 = @ptrCast(self.vertices.ptr);
+        const src: [*]const u8 = @ptrCast(self.model.vertices.ptr);
         @memcpy(dst[0..buffer_size], src[0..buffer_size]);
 
         self.createBuffer(
@@ -1603,16 +1708,16 @@ const Context = struct {
             // .anisotropyEnable = c.VK_FALSE,
             // .maxAnisotropy = 1.0,
             // NOTE: anisotropy has to be enabled in the logical device, too
-            .anisotropyEnable = c.VK_SUCCESS,
+            .anisotropyEnable = c.VK_TRUE,
             .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
             .borderColor = c.VK_BORDER_COLOR_INT_OPAQUE_BLACK,
             .unnormalizedCoordinates = c.VK_FALSE,
             .compareEnable = c.VK_FALSE,
             .compareOp = c.VK_COMPARE_OP_ALWAYS,
             .mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR,
-            .mipLodBias = 0.0,
-            .minLod = 0.0,
-            .maxLod = 0.0,
+            .minLod = 0, // Optional
+            .maxLod = c.VK_LOD_CLAMP_NONE,
+            .mipLodBias = 0, // Optional
         };
 
         if (c.vkCreateSampler(
@@ -1626,7 +1731,12 @@ const Context = struct {
     }
 
     fn createTextureImageView(self: *Context) void {
-        self.texture_image_view = self.createImageView(self.texture_image, c.VK_FORMAT_R8G8B8A8_SRGB);
+        self.texture_image_view = self.createImageView(
+            self.texture_image,
+            c.VK_FORMAT_R8G8B8A8_SRGB,
+            c.VK_IMAGE_ASPECT_COLOR_BIT,
+            self.mip_levels,
+        );
     }
 
     fn createImageViews(self: *Context) void {
@@ -1634,11 +1744,22 @@ const Context = struct {
 
         self.swap_chain_image_views.resize(allocator, self.swap_chain_images.items.len) catch unreachable;
         for (0..self.swap_chain_images.items.len) |i| {
-            self.swap_chain_image_views.items[i] = self.createImageView(self.swap_chain_images.items[i], self.swap_chain_image_format);
+            self.swap_chain_image_views.items[i] = self.createImageView(
+                self.swap_chain_images.items[i],
+                self.swap_chain_image_format,
+                c.VK_IMAGE_ASPECT_COLOR_BIT,
+                1,
+            );
         }
     }
 
-    fn createImageView(self: *Context, image: c.VkImage, format: c.VkFormat) c.VkImageView {
+    fn createImageView(
+        self: *Context,
+        image: c.VkImage,
+        format: c.VkFormat,
+        aspect_flags: c.VkImageAspectFlags,
+        mip_levels: u32,
+    ) c.VkImageView {
         var view_create_info: c.VkImageViewCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = image,
@@ -1651,9 +1772,9 @@ const Context = struct {
                 .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
             },
             .subresourceRange = .{
-                .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                .aspectMask = aspect_flags,
                 .baseMipLevel = 0,
-                .levelCount = 1,
+                .levelCount = mip_levels,
                 .baseArrayLayer = 0,
                 .layerCount = 1,
             },
@@ -1675,9 +1796,10 @@ const Context = struct {
     fn createTextureImage(self: *Context) void {
         var texture_width: i32 = 0;
         var texture_height: i32 = 0;
+
         var texture_channels: i32 = 0;
         const pixels: ?*c.stbi_uc = c.stbi_load(
-            "assets/texture.jpg",
+            "assets/viking_room.png",
             &texture_width,
             &texture_height,
             &texture_channels,
@@ -1685,6 +1807,17 @@ const Context = struct {
         );
         if (pixels == null) @panic("failed to load texture image!");
         const image_size: c.VkDeviceSize = @intCast(texture_width * texture_height * 4);
+
+        {
+            var mip_levels: f32 = @max(
+                @as(f32, @floatFromInt(texture_width)),
+                @as(f32, @floatFromInt(texture_height)),
+            );
+            mip_levels = @log2(mip_levels);
+            mip_levels = @floor(mip_levels);
+            mip_levels += 1;
+            self.mip_levels = @intFromFloat(mip_levels);
+        }
 
         var staging_buffer: c.VkBuffer = null;
         defer c.vkDestroyBuffer(self.logical_device, staging_buffer, null);
@@ -1723,9 +1856,10 @@ const Context = struct {
         self.createImage(
             @intCast(texture_width),
             @intCast(texture_height),
+            self.mip_levels,
             c.VK_FORMAT_R8G8B8A8_SRGB,
             c.VK_IMAGE_TILING_OPTIMAL,
-            c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT,
+            c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT,
             c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             &self.texture_image,
             &self.texture_image_memory,
@@ -1736,6 +1870,7 @@ const Context = struct {
             c.VK_FORMAT_R8G8B8A8_SRGB,
             c.VK_IMAGE_LAYOUT_UNDEFINED,
             c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            self.mip_levels,
         );
 
         self.copyBufferToImage(
@@ -1750,6 +1885,15 @@ const Context = struct {
             c.VK_FORMAT_R8G8B8A8_SRGB,
             c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1,
+        );
+
+        self.generateMipmaps(
+            self.texture_image,
+            c.VK_FORMAT_R8G8B8A8_SRGB,
+            texture_width,
+            texture_height,
+            self.mip_levels,
         );
     }
 
@@ -1759,9 +1903,8 @@ const Context = struct {
         format: c.VkFormat,
         old_layout: c.VkImageLayout,
         new_layout: c.VkImageLayout,
+        mip_levels: u32,
     ) void {
-        _ = format;
-
         const command_buffer = self.beginSingleTimeCommands();
 
         var barrier: c.VkImageMemoryBarrier = .{
@@ -1774,7 +1917,7 @@ const Context = struct {
             .subresourceRange = .{
                 .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
-                .levelCount = 1,
+                .levelCount = mip_levels,
                 .baseArrayLayer = 0,
                 .layerCount = 1,
             },
@@ -1782,6 +1925,16 @@ const Context = struct {
 
         var source_stage: c.VkPipelineStageFlags = 0;
         var destination_stage: c.VkPipelineStageFlags = 0;
+
+        if (new_layout == c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+
+            if (self.hasStencilComponent(format)) {
+                barrier.subresourceRange.aspectMask |= c.VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+        } else {
+            barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        }
 
         if (old_layout == c.VK_IMAGE_LAYOUT_UNDEFINED and new_layout == c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             barrier.srcAccessMask = 0;
@@ -1795,6 +1948,12 @@ const Context = struct {
 
             source_stage = c.VK_PIPELINE_STAGE_TRANSFER_BIT;
             destination_stage = c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (old_layout == c.VK_IMAGE_LAYOUT_UNDEFINED and new_layout == c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+            source_stage = c.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destination_stage = c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         } else {
             @panic("unsupported layout transition!");
         }
@@ -1854,6 +2013,7 @@ const Context = struct {
         self: *Context,
         width: u32,
         height: u32,
+        mip_levels: u32,
         format: c.VkFormat,
         tiling: c.VkImageTiling,
         usage: c.VkImageUsageFlags,
@@ -1869,7 +2029,7 @@ const Context = struct {
                 .height = @intCast(height),
                 .depth = 1,
             },
-            .mipLevels = 1,
+            .mipLevels = mip_levels,
             .arrayLayers = 1,
             .format = format,
             .tiling = tiling,
@@ -1934,12 +2094,12 @@ const Context = struct {
             }
         }
 
-        // begin render pass
-        const clear_color: c.VkClearValue = .{
-            .color = .{
-                .float32 = [_]f32{ 0.0, 0.0, 0.0, 1.0 },
-            },
+        // clear values
+        var clear_values = [_]c.VkClearValue{
+            .{ .color = .{ .float32 = [4]f32{ 0, 0, 0, 1 } } },
+            .{ .depthStencil = .{ .depth = 1, .stencil = 0 } },
         };
+
         var render_pass_begin_info: c.VkRenderPassBeginInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = self.render_pass,
@@ -1948,8 +2108,8 @@ const Context = struct {
                 .offset = .{ .x = 0, .y = 0 },
                 .extent = self.swap_chain_extent,
             },
-            .clearValueCount = 1,
-            .pClearValues = &clear_color,
+            .clearValueCount = clear_values.len,
+            .pClearValues = &clear_values,
         };
         c.vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
         {
@@ -2002,13 +2162,177 @@ const Context = struct {
             );
             c.vkCmdDrawIndexed(
                 command_buffer,
-                @intCast(self.indices.len),
+                @intCast(self.model.indices.len),
                 1,
                 0,
                 0,
                 0,
             );
         }
+    }
+
+    fn findDepthFormat(self: *Context) c.VkFormat {
+        return self.findSupportedFormat(
+            &[_]c.VkFormat{
+                c.VK_FORMAT_D32_SFLOAT,
+                c.VK_FORMAT_D32_SFLOAT_S8_UINT,
+                c.VK_FORMAT_D24_UNORM_S8_UINT,
+            },
+            c.VK_IMAGE_TILING_OPTIMAL,
+            c.VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        );
+    }
+
+    fn findSupportedFormat(self: *Context, candidates: []const c.VkFormat, tiling: c.VkImageTiling, features: c.VkFormatFeatureFlags) c.VkFormat {
+        for (candidates) |format| {
+            var props: c.VkFormatProperties = .{};
+            c.vkGetPhysicalDeviceFormatProperties(self.physical_device, format, &props);
+
+            if (tiling == c.VK_IMAGE_TILING_LINEAR and (props.linearTilingFeatures & features) == features) {
+                return format;
+            } else if (tiling == c.VK_IMAGE_TILING_OPTIMAL and (props.optimalTilingFeatures & features) == features) {
+                return format;
+            }
+        }
+        @panic("failed to find supported format!");
+    }
+
+    fn hasStencilComponent(self: *Context, format: c.VkFormat) bool {
+        _ = self;
+        return format == c.VK_FORMAT_D32_SFLOAT_S8_UINT or format == c.VK_FORMAT_D24_UNORM_S8_UINT;
+    }
+
+    fn generateMipmaps(self: *Context, image: c.VkImage, image_format: c.VkFormat, tex_width: i32, tex_height: i32, mip_levels: u32) void {
+        // Check if image format supports linear blitting
+        var format_properties: c.VkFormatProperties = null;
+        c.vkGetPhysicalDeviceFormatProperties(
+            self.physical_device,
+            image_format,
+            &format_properties,
+        );
+
+        if (!(format_properties.optimalTilingFeatures & c.VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+            @panic("texture image format does not support linear blitting!");
+        }
+
+        const command_buffer: c.VkCommandBuffer = beginSingleTimeCommands();
+
+        var barrier: c.VkImageMemoryBarrier = .{
+            .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .image = image,
+            .srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+            .subresourceRange = .{
+                .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+        };
+
+        var mip_width: i32 = tex_width;
+        var mip_height: i32 = tex_height;
+
+        for (1..mip_levels) |i| {
+            barrier.subresourceRange.baseMipLevel = i - 1;
+            barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.srcAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = c.VK_ACCESS_TRANSFER_READ_BIT;
+
+            c.vkCmdPipelineBarrier(
+                command_buffer,
+                c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                null,
+                0,
+                null,
+                1,
+                &barrier,
+            );
+
+            var blit: c.VkImageBlit = .{
+                .srcOffsets = [2]c.VkOffset3D{
+                    .{ .x = 0, .y = 0, .z = 0 },
+                    .{ .x = mip_width, .y = mip_height, .z = 1 },
+                },
+                .dstOffsets = .{
+                    .{ .x = 0, .y = 0, .z = 0 },
+                    .{
+                        .x = if (mip_width > 1) mip_width / 2 else 1,
+                        .y = if (mip_height > 1) mip_height / 2 else 1,
+                        .z = 1,
+                    },
+                },
+                .srcSubresource = .{
+                    .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                    .mipLevel = i - 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .dstSubresource = .{
+                    .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                    .mipLevel = i,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+
+            c.vkCmdBlitImage(
+                command_buffer,
+                image,
+                c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                image,
+                c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &blit,
+                c.VK_FILTER_LINEAR,
+            );
+
+            barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = c.VK_ACCESS_TRANSFER_READ_BIT;
+            barrier.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
+
+            c.vkCmdPipelineBarrier(
+                command_buffer,
+                c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                null,
+                0,
+                null,
+                1,
+                &barrier,
+            );
+
+            if (mip_width > 1) mip_width /= 2;
+            if (mip_height > 1) mip_height /= 2;
+        }
+
+        barrier.subresourceRange.baseMipLevel = mip_levels - 1;
+        barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
+
+        c.vkCmdPipelineBarrier(
+            command_buffer,
+            c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &barrier,
+        );
+
+        endSingleTimeCommands(command_buffer);
     }
 };
 
@@ -2342,4 +2666,122 @@ fn findMemoryType(
     }
 
     @panic("failed to find suitable memory type!");
+}
+
+const Model = struct {
+    vertices: []Vertex,
+    indices: []VertexIndex,
+};
+
+pub fn loadModel(allocator: std.mem.Allocator) !Model {
+    var model = obj.parseObj(allocator, @embedFile("assets/viking_room.obj")) catch |err| {
+        std.debug.print("Failed to load model: {}\n", .{err});
+        return err;
+    };
+    defer model.deinit(allocator);
+
+    // Debug info
+    std.debug.print("=== OBJ DEBUG ===\n", .{});
+    std.debug.print("Total vertices (floats): {}\n", .{model.vertices.len});
+    std.debug.print("Total tex_coords (floats): {}\n", .{model.tex_coords.len});
+    std.debug.print("Total normals (floats): {}\n", .{model.normals.len});
+    std.debug.print("Number of meshes: {}\n", .{model.meshes.len});
+
+    for (model.meshes, 0..) |mesh, mesh_i| {
+        std.debug.print("\nMesh {}: name={s}\n", .{ mesh_i, mesh.name orelse "null" });
+        std.debug.print("  num_vertices array len: {}\n", .{mesh.num_vertices.len});
+        std.debug.print("  indices array len: {}\n", .{mesh.indices.len});
+
+        // Print first few face sizes
+        std.debug.print("  First 10 face sizes: ", .{});
+        for (mesh.num_vertices[0..@min(10, mesh.num_vertices.len)]) |nv| {
+            std.debug.print("{} ", .{nv});
+        }
+        std.debug.print("\n", .{});
+
+        // Print first few indices
+        std.debug.print("  First 10 indices:\n", .{});
+        for (mesh.indices[0..@min(10, mesh.indices.len)], 0..) |idx, i| {
+            std.debug.print("    [{}] v={?} t={?} n={?}\n", .{ i, idx.vertex, idx.tex_coord, idx.normal });
+        }
+    }
+    std.debug.print("=================\n", .{});
+
+    var vertices_list: std.ArrayList(Vertex) = .empty;
+    var indices_list: std.ArrayList(VertexIndex) = .empty;
+
+    var unique_vertices: std.AutoHashMap(struct { u32, u32, u32 }, u32) = .init(allocator);
+    defer unique_vertices.deinit();
+
+    for (model.meshes) |mesh| {
+        var index_offset: usize = 0;
+
+        for (mesh.num_vertices) |num_verts| {
+            // Get indices for this face
+            const face_indices = mesh.indices[index_offset .. index_offset + num_verts];
+            index_offset += num_verts;
+
+            // Triangulate: fan triangulation (works for convex polygons)
+            if (num_verts < 3) continue;
+
+            for (2..num_verts) |i| {
+                // Triangle: vertex 0, vertex i-1, vertex i
+                const tri_indices = [3]obj.Mesh.Index{
+                    face_indices[0],
+                    face_indices[i - 1],
+                    face_indices[i],
+                };
+
+                for (tri_indices) |index| {
+                    const vert_idx = index.vertex orelse continue;
+
+                    const key = .{
+                        vert_idx,
+                        index.tex_coord orelse 0,
+                        index.normal orelse 0,
+                    };
+
+                    if (unique_vertices.get(key)) |existing_index| {
+                        try indices_list.append(allocator, @intCast(existing_index));
+                    } else {
+                        const new_index: u32 = @intCast(vertices_list.items.len);
+
+                        const pos_idx = vert_idx * 3;
+                        const pos = model.vertices[pos_idx .. pos_idx + 3];
+
+                        var tex_coord = Vec2{ .x = 0, .y = 0 };
+                        if (index.tex_coord) |tc_idx| {
+                            const tc_offset = tc_idx * 2;
+                            const tc = model.tex_coords[tc_offset .. tc_offset + 2];
+                            tex_coord = .{
+                                .x = tc[0],
+                                .y = 1.0 - tc[1],
+                            };
+                        }
+
+                        try vertices_list.append(allocator, .{
+                            .pos = .{ .x = pos[0], .y = pos[1], .z = pos[2] },
+                            .color = .{ .x = 1, .y = 1, .z = 1 },
+                            .texCoord = tex_coord,
+                        });
+
+                        try unique_vertices.put(key, new_index);
+                        try indices_list.append(allocator, @intCast(new_index));
+                    }
+                }
+            }
+        }
+    }
+
+    std.debug.print("Loaded model: {} vertices, {} indices\n", .{ vertices_list.items.len, indices_list.items.len });
+
+    return .{
+        .vertices = try vertices_list.toOwnedSlice(allocator),
+        .indices = try indices_list.toOwnedSlice(allocator),
+    };
+}
+
+pub fn unloadModel(allocator: std.mem.Allocator, model: Model) void {
+    allocator.free(model.vertices);
+    allocator.free(model.indices);
 }

@@ -11,12 +11,15 @@ pub fn build(b: *std.Build) void {
         b.option(bool, "enable-validation-layers", "Enable validation layers") orelse false,
     );
 
+    const obj_mod = b.dependency("obj", .{ .target = target, .optimize = optimize }).module("obj");
+
     const root_module = b.addModule("zig_vulkan", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     root_module.addOptions("build_options", options);
+    root_module.addImport("obj", obj_mod);
 
     const exe = b.addExecutable(.{
         .name = "zig_vulkan",

@@ -9,3 +9,9 @@ glslc -fshader-stage=frag ./src/vulkan_tutorial/03_uniform_buffers/shaders/frag.
 
 glslc -fshader-stage=vert ./src/vulkan_tutorial/04_texture_mapping/shaders/vert.glsl -o ./src/vulkan_tutorial/04_texture_mapping/spv/vert.spv
 glslc -fshader-stage=frag ./src/vulkan_tutorial/04_texture_mapping/shaders/frag.glsl -o ./src/vulkan_tutorial/04_texture_mapping/spv/frag.spv
+
+glslc -fshader-stage=vert ./src/vulkan_tutorial/05_depth_buffering/shaders/vert.glsl -o ./src/vulkan_tutorial/05_depth_buffering/spv/vert.spv
+glslc -fshader-stage=frag ./src/vulkan_tutorial/05_depth_buffering/shaders/frag.glsl -o ./src/vulkan_tutorial/05_depth_buffering/spv/frag.spv
+
+glslc -fshader-stage=vert ./src/vulkan_tutorial/06_loading_models/shaders/vert.glsl -o ./src/vulkan_tutorial/06_loading_models/spv/vert.spv
+glslc -fshader-stage=frag ./src/vulkan_tutorial/06_loading_models/shaders/frag.glsl -o ./src/vulkan_tutorial/06_loading_models/spv/frag.spv
